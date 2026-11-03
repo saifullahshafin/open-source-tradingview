@@ -1,0 +1,20 @@
+{
+  "name": "chart-hub-build",
+  "private": true,
+  "dependencies": {
+    "@klinecharts/pro": "^0.1.1",
+    "@luxalgo/vela": "^0.9.3",
+    "@luxalgo/vela-pinets": "0.2.18",
+    "esbuild": "^0.25.0",
+    "klinecharts": "^9.8.12",
+    "lightweight-charts": "^5.2.1",
+    "lightweight-charts-drawing": "^0.6.2",
+    "pinets": "0.12.1"
+  },
+  "description": "Builds hub/vela.bundle.js (Vela workspace + Pine Script engine) and copies the backup engines into hub/vendor.",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --format=iife --global-name=VelaLab --minify --outfile=../hub/vela.bundle.js",
+    "vendor": "node copy_vendor.js"
+  }
+}

@@ -1,0 +1,182 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lab 3 - LuxAlgo Vela</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f161d;color:#d6dee5;font:13px system-ui,Segoe UI,sans-serif}
+  #top{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid #26333f;height:31px;box-sizing:border-box}
+  #top button,#top select{background:#16212b;color:#d6dee5;border:1px solid #2b3946;padding:3px 8px;cursor:pointer}
+  #chart{position:absolute;top:31px;left:0;right:0;bottom:0}
+</style></head><body>
+<div id="top"><b>LuxAlgo Vela 0.9.3 (workspace)</b>
+  <select id="layout"><option value="">1 chart</option><option value="2h">2 side by side</option><option value="2v">2 stacked</option><option value="4">4 charts</option><option value="8">8 charts</option></select>
+  <span style="color:#93a2af">Tips: type a letter for symbol search, a digit for timeframe, ? for all shortcuts. Drag pane borders to resize.</span>
+  <button id="auto">Code trendline</button></div>
+<div id="chart"></div>
+<script src="vela.bundle.js"></script>
+<script src="theme.js"></script>
+<script src="lab.js"></script>
+<script>
+let lastBars = [];
+const provider = {
+  async listSymbols() {
+    return LabSymbols.map((s) => ({ ticker: s.ticker, description: s.name, type: /crypto|bybit-(perp|spot|futures|inverse|mark|index)/.test(s.group) ? "crypto" : /forex/.test(s.group) ? "forex" : s.group === "arm-stock" ? "stock" : /index|indices/.test(s.group) ? "index" : "commodity" }));
+  },
+  async getBars(ticker, timeframe, range = {}) {
+    const tf = LabTF.fromAny(timeframe);
+    const bars = await LabFeed.history(ticker, tf, range.to, range.limit || 1000);
+    let out = bars.map((b) => ({ ...b, time: b.time * 1000 }));
+    if (range.from) out = out.filter((b) => b.time >= range.from);
+    if (!range.to) { lastBars = out; setTimeout(applyTheme, 400); }  // the volume indicator mounts with the data: colour it then
+    return out;
+  },
+  subscribe(ticker, timeframe, onBar) {
+    return LabFeed.live(ticker, LabTF.fromAny(timeframe), (b) => {
+      const bar = { ...b, time: b.time * 1000 };
+      const last = lastBars[lastBars.length - 1];
+      if (last && last.time === bar.time) lastBars[lastBars.length - 1] = bar; else lastBars.push(bar);
+      onBar(bar);
+    });
+  },
+};
+
+let ws;
+// A Pine barcolor() repaints candle bodies over the user's colours. The hub's setting wins unless "Let indicators recolour candles" is on.
+class HubPineEngine extends VelaLab.PineWorkerEngine {
+  execute(req, handlers) {
+    const h = Object.create(handlers);
+    h.onModel = (model) => { if (!HubSettingsLoad().indicatorBars && model && model.barColors) model = { ...model, barColors: undefined }; handlers.onModel(model); };
+    return super.execute(req, h);
+  }
+}
+// Inside the Chart Hub, Vela's own "Indicators" button opens the hub's own Indicators dialog
+// (Vela native indicators + your own Pine scripts in one place).
+if (LabEmbedded && VelaLab.registerWidgetAction) {
+  VelaLab.registerWidgetAction({ id: "indicators", target: "topbar", align: "left", label: "Indicators", icon: "indicators",
+    run: () => window.parent.postMessage({ evt: "indicators:open" }, location.origin) });
+}
+// ---- Theme (Chart Hub settings) ----
+// hexA() comes from theme.js
+function velaTheme() { const t = HubTheme; return { background: t.bg, textColor: t.text, gridColor: t.grid, borderColor: t.line, upColor: t.up, downColor: t.down, fontFamily: t.font }; }
+// Candle colours have one home: the hub's Settings panel. Inside the hub, Vela's own dialog hides its colour rows.
+const CANDLE_COLOUR_ROWS = ["symbol.style.candles.body", "symbol.style.candles.borders", "symbol.style.candles.wick", "symbol.style.bars.up-color", "symbol.style.bars.down-color"];
+function guardCandleColours(chart) {
+  if (!LabEmbedded || chart.hubGuarded) return;
+  chart.hubGuarded = true;
+  try { chart.renderer.setSettingsVisibility({ hidden: CANDLE_COLOUR_ROWS }); } catch (e) { console.warn("settings rows", e); }
+  // Vela's "Reset defaults" must not pull the candles away from the hub's colours.
+  try { chart.renderer.onConfigChanged(() => { const c = chart.renderer.getConfig().candles; if (c && (c.upColor !== HubTheme.up || c.downColor !== HubTheme.down)) colorChart(chart); }); } catch (e) { console.warn("config guard", e); }
+}
+function colorChart(chart) {
+  const t = HubTheme;
+  guardCandleColours(chart);
+  try {
+    chart.renderer.applyConfig({
+      layout: { background: t.bg, textColor: t.text, fontFamily: t.font },
+      grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+      crosshair: { color: t.dim, labelBackground: t.raised },
+      priceScale: { borderColor: t.line }, panes: { separatorColor: t.line },
+      candles: { upColor: t.up, downColor: t.down, borderUpColor: t.up, borderDownColor: t.down, wickUpColor: t.up, wickDownColor: t.down },
+      bars: { upColor: t.up, downColor: t.down },
+      line: { color: t.accent }, area: { lineColor: t.accent, topColor: hexA(t.accent, 0.28), bottomColor: hexA(t.accent, 0.02) },
+      baseline: { topLineColor: t.up, bottomLineColor: t.down, topFillColor: hexA(t.up, 0.25), bottomFillColor: hexA(t.down, 0.25) },
+      trades: { longColor: t.up, shortColor: t.down },
+    });
+  } catch (e) { console.warn("theme config", e); }
+  try { // built-in volume keeps its own colours: recolour it only if it is on the chart
+    if (chart.presentNativeIndicators().includes("volume")) chart.addNativeIndicator("volume").setInputs({ upColor: t.up + "6b", downColor: t.down + "6b" });
+  } catch (e) { console.warn("volume colours", e); }
+}
+function applyTheme() {
+  try { ws.setTheme(velaTheme()); } catch (e) { console.warn("setTheme", e); }
+  (ws.cells ? ws.cells() : [ws.active]).forEach((c) => c && c.chart && colorChart(c.chart));
+}
+const VELA_TF = { M1: "1", M5: "5", M15: "15", M30: "30", H1: "60", H4: "240", D1: "1D" };
+function build(layout) {
+  const host = document.getElementById("chart");
+  if (ws && ws.destroy) ws.destroy();
+  host.innerHTML = "";
+  ws = new VelaLab.VelaWorkspace(host, {
+    // "1" (not false) so the layout can change in place later; top-level symbol/timeframe are every cell's default.
+    layout: layout || "1", symbol: "lab:" + LabDefaultSymbol, timeframe: VELA_TF[LabDefaultTF], live: true,
+    theme: velaTheme(), upColor: HubTheme.up, downColor: HubTheme.down,
+    providers: { lab: () => provider }, persist: false,
+    // Inside the Chart Hub wrapper, symbol / timeframe / layout live in the wrapper's bar only (no duplicate controls).
+    ...(LabEmbedded ? { topbar: { left: ["style", "indicators", "undo-redo"] } } : {}),
+    // Pine Script runs in its own worker per chart (PineTS via @luxalgo/vela-pinets), so heavy scripts never freeze the chart.
+    engines: { pine: () => new HubPineEngine() },
+  });
+  // Colour every chart once its first history is in (the volume indicator mounts with the data).
+  setTimeout(applyTheme, 1500);
+  // Tell the Chart Hub shell when the symbol or timeframe is changed inside Vela.
+  ws.chart.on("market:changed", ({ symbol, timeframe }) => {
+    // Remember the current market, so a layout rebuild opens on it (not on the first symbol).
+    if (symbol) window.LabDefaultSymbol = String(symbol).replace(/^lab:/, "");
+    if (timeframe) window.LabDefaultTF = LabTF.fromAny(timeframe);
+  });
+  // An indicator removed from Vela's legend: the hub forgets it too (else it comes back on reload).
+  // Settings changed in Vela's dialog: the hub stores the values so they survive a reload.
+  try { ws.chart.on("indicator:inputs", (ev) => { const h = ws.chart.indicators().find((x) => x.id === (ev && ev.id)); if (LabEmbedded && h) window.parent.postMessage({ evt: "ind:inputs", id: h.id, inputs: h.inputValues(), props: h.propValues ? h.propValues() : {} }, location.origin); }); } catch (_) {}
+  // Last run per script (plot values): proof that an indicator really produced numbers (click test, status).
+  window.lastRuns = {};
+  try { ws.chart.on("script:run", (ev) => { if (ev && ev.id) window.lastRuns[ev.id] = { plots: ev.plots || {}, bar: ev.bar, warnings: (ev.warnings || []).length, at: Date.now() }; }); } catch (_) {}
+  try { ws.chart.on("indicator:removed", (ev) => { if (LabEmbedded && ev && ev.id) window.parent.postMessage({ evt: "ind:removed", id: ev.id }, location.origin); }); } catch (_) {}
+  ws.chart.on("market:changed", ({ symbol, timeframe }) => LabNotify(String(symbol || "").replace(/^lab:/, ""), LabTF.fromAny(timeframe || "1")));
+}
+build("");
+document.getElementById("layout").onchange = (e) => build(e.target.value);
+
+function addCodeTrendline() {
+  const b = lastBars, n = b.length; if (n < 30) return null;
+  const from = Math.max(2, n - 120), lows = [];
+  for (let i = from; i < n - 2; i++) if (b[i].low < b[i-1].low && b[i].low < b[i-2].low && b[i].low < b[i+1].low && b[i].low < b[i+2].low) lows.push(b[i]);
+  if (lows.length < 2) return null;
+  const a = lows.reduce((m, x) => (x.low < m.low ? x : m), lows[0]);
+  const later = lows.filter((x) => x.time > a.time);
+  const c = later.length ? later.reduce((m, x) => (x.low < m.low ? x : m), later[0]) : lows[lows.length - 1];
+  return ws.chart.drawings.add("trendline", { paneId: "price", anchors: [{ time: a.time, price: a.low }, { time: c.time, price: c.low }] });
+}
+document.getElementById("auto").onclick = addCodeTrendline;
+window.labChart = {
+  name: "vela",
+  // Switch in place: indicators re-run on the new bars; panes, drawings and settings stay.
+  // Layout in place (cells keep their state); new cells get the theme colours.
+  setLayout: (layout) => { document.getElementById("layout").value = layout || ""; if (ws.setLayout) { ws.setLayout(layout || "1"); setTimeout(applyTheme, 1500); } else build(layout || ""); },
+  applyTheme,
+  // Add a Pine Script indicator to the active chart. Resolves {ok, id, error}.
+  removePine: (id) => {
+    const h = (window.pineHandles || {})[id] || ws.chart.indicators().find((x) => x.id === id);
+    if (h) { h.remove(); if (window.pineHandles) delete window.pineHandles[id]; return true; } return false;
+  },
+  // Vela's own (native, core-computed) indicators: catalog, add.
+  natives: async () => (await ws.chart.availableNativeIndicators()).map((n) => ({ type: n.type, title: n.title, supported: n.supported, present: n.present, multi: !!n.multiInstance, beta: !!n.beta })),
+  addNative: (type, inputs) => {
+    try {
+      const h = ws.chart.addNativeIndicator(type, inputs ? { inputs } : undefined);
+      if (!h || !h.id) return { ok: false, error: "not available on this chart" };
+      (window.pineHandles = window.pineHandles || {})[h.id] = h; return { ok: true, id: h.id, title: h.title };
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  },
+  // Everything on the chart now (script + native), for the dialog and for the click tests.
+  lastRun: (id) => (window.lastRuns || {})[id] || null,
+  onChart: () => ws.chart.indicators().map((h) => ({ id: h.id, title: h.title, native: h.nativeType || null, visible: h.visible })),
+  addPine: async (source, inputs, props) => {
+    try {
+      const opt = {}; if (inputs && Object.keys(inputs).length) opt.inputs = inputs; if (props && Object.keys(props).length) opt.props = props;
+      const h = ws.chart.addIndicator(source, opt);
+      (window.pineHandles = window.pineHandles || {})[h.id] = h;
+      const res = await new Promise((done) => {
+        const t = setTimeout(() => done({ ok: true, id: h.id, pending: true, note: "no result within 15 s (no chart data yet?)" }), 15000);
+        h.on("ready", () => { clearTimeout(t); done({ ok: true, id: h.id, title: h.title });
+          if (LabEmbedded) window.parent.postMessage({ evt: "ind:ready", id: h.id }, location.origin); });  // also after a late start
+        h.on("error", ({ error }) => { clearTimeout(t); done({ ok: false, id: h.id, error: String(error && error.message || error) }); });
+      });
+      return res;
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  },
+  setMarket: (symbol, tf) => (window.LabDefaultSymbol = symbol, window.LabDefaultTF = tf || LabDefaultTF, ws.chart.setMarket({ symbol: "lab:" + symbol, timeframe: VELA_TF[tf] || "1" })),
+  setTF: (t) => ws.chart.setTimeframe ? ws.chart.setTimeframe({ M1: "1", M5: "5", M15: "15", M30: "30", H1: "60", H4: "240", D1: "1D" }[t]) : null,
+  addCodeTrendline,
+  drawingCount: () => { try { return ws.chart.drawings.list().length; } catch (_) { return -1; } },
+  barCount: () => lastBars.length,
+};
+</script>
+</body></html>

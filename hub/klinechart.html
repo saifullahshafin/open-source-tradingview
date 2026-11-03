@@ -1,0 +1,111 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lab 2 - KLineChart Pro</title>
+<link rel="stylesheet" href="vendor/klinecharts-pro.css">
+<style>
+  html,body{margin:0;height:100%;background:#0f161d;color:#d6dee5;font:13px system-ui,Segoe UI,sans-serif}
+  #top{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid #26333f;height:31px;box-sizing:border-box}
+  #top button{background:#16212b;color:#d6dee5;border:1px solid #2b3946;padding:3px 8px;cursor:pointer}
+  #chart{position:absolute;top:31px;left:0;right:0;bottom:0}
+  /* Chart Hub theme (theme.js sets the --vars) */
+  .klinecharts-pro[data-theme=dark], .klinecharts-pro[data-theme=light] {
+    --klinecharts-pro-primary-color: var(--accent); --klinecharts-pro-background-color: var(--bg);
+    --klinecharts-pro-popover-background-color: var(--panel); --klinecharts-pro-hover-background-color: var(--raised);
+    --klinecharts-pro-border-color: var(--line); --klinecharts-pro-text-color: var(--text);
+    --klinecharts-pro-text-second-color: var(--dim); --klinecharts-pro-selected-color: rgba(227,163,58,.18);
+  }
+  #chart.klinecharts-pro { font-family: var(--font); height: auto !important }  /* its CSS fixes 80vh; top/bottom stretch it instead */
+</style></head><body>
+<div id="top"><b>KLineChart Pro 0.1.1 (core 9.8.12)</b><button id="auto">Code trendline</button></div>
+<div id="chart"></div>
+<script src="vendor/klinecharts.min.js"></script>
+<script src="vendor/klinecharts-pro.umd.js"></script>
+<script src="theme.js"></script>
+<script src="lab.js"></script>
+<script>
+const SYMBOLS = LabSymbols.map((s) => ({ ticker: s.ticker, name: s.name, shortName: s.ticker, exchange: s.source === "arm" ? "Remote MT5" : s.source === "bybit" ? "BYBIT" : s.source === "mt5" ? "MT5" : s.source === "deriv" ? "DERIV" : "BINANCE",
+  pricePrecision: s.digits != null ? s.digits : (["XRPUSD", "DOGEUSD", "ADAUSD"].includes(s.ticker) ? 4 : 2), volumePrecision: 2 }));
+const PERIODS = [
+  { multiplier: 1, timespan: "minute", text: "1m" }, { multiplier: 5, timespan: "minute", text: "5m" },
+  { multiplier: 15, timespan: "minute", text: "15m" }, { multiplier: 30, timespan: "minute", text: "30m" },
+  { multiplier: 1, timespan: "hour", text: "1H" }, { multiplier: 4, timespan: "hour", text: "4H" },
+  { multiplier: 1, timespan: "day", text: "D" },
+];
+const tfOf = (p) => LabTF.fromAny(p.multiplier + ({ minute: "m", hour: "h", day: "d" }[p.timespan] || "m"));
+const toK = (b) => ({ timestamp: b.time * 1000, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume });
+let stop = null, lastBars = [], lastTicker = null;
+
+const datafeed = {
+  async searchSymbols(q) { q = (q || "").toUpperCase(); return SYMBOLS.filter((s) => s.ticker.includes(q)); },
+  async getHistoryKLineData(symbol, period, from, to) {
+    const bars = await LabFeed.history(symbol.ticker, tfOf(period), to);
+    const out = bars.filter((b) => b.time * 1000 >= from && b.time * 1000 <= to).map(toK);
+    if (symbol.ticker !== lastTicker || !lastBars.length || out.length && out[out.length - 1].timestamp >= lastBars[lastBars.length - 1].timestamp) { lastBars = out; lastTicker = symbol.ticker; }
+    return out;
+  },
+  subscribe(symbol, period, cb) {
+    if (stop) stop();
+    LabNotify(symbol.ticker, tfOf(period));
+    stop = LabFeed.live(symbol.ticker, tfOf(period), (b) => cb(toK(b)));
+  },
+  unsubscribe() { if (stop) { stop(); stop = null; } },
+};
+
+const pro = new klinechartspro.KLineChartPro({
+  container: document.getElementById("chart"), theme: HubTheme.mode, locale: "en-US",
+  symbol: SYMBOLS.find((s) => s.ticker === LabDefaultSymbol) || SYMBOLS[0], period: PERIODS[LabTF.list.indexOf(LabDefaultTF)] || PERIODS[0], periods: PERIODS, datafeed,
+  subIndicators: ["VOL"], timezone: "UTC",
+});
+
+// Candle, grid and axis colours from the theme (KLineChart draws on canvas, so CSS alone does not reach them).
+function applyTheme() {
+  const HubT = HubTheme; pro.setTheme(HubT.mode);
+  pro._chartApi.setStyles({
+  grid: { horizontal: { color: HubTheme.grid }, vertical: { color: HubTheme.grid } },
+  candle: { bar: { upColor: HubTheme.up, downColor: HubTheme.down, noChangeColor: HubTheme.dim,
+                   upBorderColor: HubTheme.up, downBorderColor: HubTheme.down, noChangeBorderColor: HubTheme.dim,
+                   upWickColor: HubTheme.up, downWickColor: HubTheme.down, noChangeWickColor: HubTheme.dim },
+            priceMark: { last: { upColor: HubTheme.up, downColor: HubTheme.down, noChangeColor: HubTheme.dim } } },
+  // Arrays replace the defaults, so each entry carries every field.
+  indicator: { bars: [{ style: "fill", borderStyle: "solid", borderSize: 1, borderDashedValue: [2, 2], upColor: HubTheme.upVol, downColor: HubTheme.downVol, noChangeColor: HubTheme.dim }],
+               lines: HubTheme.lines.map((c) => ({ style: "solid", smooth: false, size: 1, dashedValue: [2, 2], color: c })) },
+  xAxis: { axisLine: { color: HubTheme.line }, tickText: { color: HubTheme.dim } },
+  yAxis: { axisLine: { color: HubTheme.line }, tickText: { color: HubTheme.dim } },
+  separator: { color: HubTheme.line },
+  });
+  // Canvas text does not inherit CSS: set the theme font on every text style.
+  const fam = HubTheme.font;
+  pro._chartApi.setStyles({
+    candle: { tooltip: { text: { family: fam } }, priceMark: { high: { textFamily: fam }, low: { textFamily: fam }, last: { text: { family: fam } } } },
+    indicator: { tooltip: { text: { family: fam } }, lastValueMark: { text: { family: fam } } },
+    xAxis: { tickText: { family: fam } }, yAxis: { tickText: { family: fam } },
+    crosshair: { horizontal: { text: { family: fam } }, vertical: { text: { family: fam } } },
+    overlay: { text: { family: fam } },
+  });
+}
+applyTheme();
+
+function addCodeTrendline() {
+  const api = pro._chartApi;  // internal chart, the only way to draw from code in Pro 0.1.1
+  if (!api || !api.getDataList) return null;
+  const d = api.getDataList(); const n = d.length; if (n < 30) return null;
+  const from = Math.max(2, n - 120), lows = [];
+  for (let i = from; i < n - 2; i++) if (d[i].low < d[i-1].low && d[i].low < d[i-2].low && d[i].low < d[i+1].low && d[i].low < d[i+2].low) lows.push(d[i]);
+  if (lows.length < 2) return null;
+  const a = lows.reduce((m, b) => (b.low < m.low ? b : m), lows[0]);
+  const later = lows.filter((b) => b.timestamp > a.timestamp);
+  const c = later.length ? later.reduce((m, b) => (b.low < m.low ? b : m), later[0]) : lows[lows.length - 1];
+  return api.createOverlay({ name: "straightLine", points: [{ timestamp: a.timestamp, value: a.low }, { timestamp: c.timestamp, value: c.low }] });
+}
+document.getElementById("auto").onclick = addCodeTrendline;
+window.labChart = {
+  name: "klinechart-pro",
+  applyTheme,
+  setMarket: (s, t) => { const x = SYMBOLS.find((y) => y.ticker === s); if (x) pro.setSymbol(x); if (t) pro.setPeriod(PERIODS[LabTF.list.indexOf(t)] || PERIODS[0]); },
+  setTF: (t) => pro.setPeriod(PERIODS[LabTF.list.indexOf(t)]),
+  addCodeTrendline,
+  drawingCount: () => (pro._chartApi && pro._chartApi.getOverlayById ? -1 : -1),
+  barCount: () => lastBars.length,
+  lastBars: () => ({ ticker: lastTicker, bars: lastBars.slice(-3) }),
+};
+</script>
+</body></html>

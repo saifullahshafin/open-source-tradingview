@@ -1,0 +1,27 @@
+# secrets
+.env
+*.env
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# runtime
+hub/logs/
+hub/.cache/
+bridge/.bridge_offset
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# build
+build/node_modules/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.bak*

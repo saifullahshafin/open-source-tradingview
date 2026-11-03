@@ -1,0 +1,183 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Lab 1 - Lightweight Charts + Drawing</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f161d;color:#d6dee5;font:13px system-ui,Segoe UI,sans-serif}
+  #bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #26333f}
+  #bar button,#bar select{background:#16212b;color:#d6dee5;border:1px solid #2b3946;padding:4px 8px;cursor:pointer;font:inherit}
+  #bar button.on{border-color:#5fb3e0;color:#5fb3e0}
+  #bar .sep{width:1px;height:20px;background:#2b3946;margin:0 4px}
+  #bar label{display:flex;gap:4px;align-items:center}
+  #chart{position:absolute;left:0;right:0;bottom:0}
+  #title{font-weight:600;margin-right:8px}
+</style></head><body>
+<div id="bar">
+  <span id="title">Lightweight Charts 5.2.1</span>
+  <select id="sym"></select>
+  <span id="tfs"></span><span class="sep"></span>
+  <select id="style"><option value="candles">Candles</option><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option></select>
+  <span class="sep"></span>
+  <button data-quick="">Cursor</button><button data-quick="trend-line">Trend</button><button data-quick="horizontal-line">H-line</button><button data-quick="rectangle">Rect</button><button data-quick="fib-retracement">Fib</button>
+  <select id="alltools"><option value="">All 86 tools...</option></select>
+  <span class="sep"></span>
+  <label><input type="checkbox" id="ema" checked>EMA 20/50/200</label>
+  <label><input type="checkbox" id="vol" checked>Volume</label>
+  <label><input type="checkbox" id="rsi" checked>RSI 14</label>
+  <span class="sep"></span>
+  <button id="auto">Code trendline</button><button id="clear">Clear drawings</button>
+</div>
+<div id="chart"></div>
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="vendor/lightweight-charts-drawing.umd.js"></script>
+<script src="theme.js"></script>
+<script src="lab.js"></script>
+<script>
+const LC = LightweightCharts, LD = LightweightChartsDrawing;
+const host = document.getElementById("chart");
+const placeChart = () => { host.style.top = document.getElementById("bar").offsetHeight + "px"; };
+placeChart(); window.addEventListener("resize", placeChart);
+
+const chart = LC.createChart(host, {
+  autoSize: true,
+  layout: { background: { color: HubTheme.bg }, textColor: HubTheme.dim, fontFamily: HubTheme.font, panes: { separatorColor: HubTheme.line, separatorHoverColor: HubTheme.accent, enableResize: true } },
+  grid: { vertLines: { color: HubTheme.grid }, horzLines: { color: HubTheme.grid } },
+  rightPriceScale: { borderColor: HubTheme.line },
+  timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 8 },
+  crosshair: { mode: LC.CrosshairMode.Normal },
+});
+
+let sym = LabDefaultSymbol, tf = LabDefaultTF, style = "candles", bars = [], stop = null, loadingOlder = false;
+let price, volS, rsiS, emaS = [], drawings;
+
+function makePrice() {
+  if (price) chart.removeSeries(price);
+  const opts = { candles: [LC.CandlestickSeries, { upColor: HubTheme.up, downColor: HubTheme.down, borderVisible: false, wickUpColor: HubTheme.up, wickDownColor: HubTheme.down }],
+    bars: [LC.BarSeries, { upColor: HubTheme.up, downColor: HubTheme.down }],
+    line: [LC.LineSeries, { color: HubTheme.accent, lineWidth: 2 }],
+    area: [LC.AreaSeries, { lineColor: HubTheme.accent, topColor: HubTheme.upVol, bottomColor: "rgba(0,0,0,0)" }] }[style];
+  price = chart.addSeries(opts[0], opts[1], 0);
+  const saved = drawings ? drawings.exportJSON() : null;
+  if (drawings) drawings.destroy();
+  drawings = new LD.DrawingManager(chart, price, { magnet: "weak" });
+  if (saved) drawings.importJSON(saved);
+  drawings.on("tool", markTools);
+}
+
+// ---- indicators computed in the page (the library has none built in) ----
+function ema(vals, n) { const k = 2 / (n + 1); let e = null; return vals.map((v) => (e = e === null ? v : v * k + e * (1 - k))); }
+function rsi(vals, n = 14) {
+  const out = []; let g = 0, l = 0;
+  for (let i = 0; i < vals.length; i++) {
+    if (i === 0) { out.push(null); continue; }
+    const d = vals[i] - vals[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
+    if (i <= n) { g += up / n; l += dn / n; out.push(i === n ? 100 - 100 / (1 + g / (l || 1e-9)) : null); }
+    else { g = (g * (n - 1) + up) / n; l = (l * (n - 1) + dn) / n; out.push(100 - 100 / (1 + g / (l || 1e-9))); }
+  }
+  return out;
+}
+function priceData(b) { return style === "line" || style === "area" ? { time: b.time, value: b.close } : b; }
+function paintAll() {
+  price.setData(bars.map(priceData));
+  // Decimals as the broker quotes them (symbol digits); guess only when the broker gave none.
+  const info = LabSymbols.find((x) => x.ticker === sym);
+  const prec = info && info.digits != null ? info.digits : (bars.length && bars[bars.length - 1].close < 10 ? 4 : 2);
+  price.applyOptions({ priceFormat: { type: "price", precision: prec, minMove: Math.pow(10, -prec) } });
+  emaS.forEach((s) => chart.removeSeries(s)); emaS = [];
+  if (document.getElementById("ema").checked) {
+    const c = bars.map((b) => b.close);
+    [[20, HubTheme.lines[0]], [50, HubTheme.lines[1]], [200, HubTheme.lines[3]]].forEach(([n, col]) => {
+      const s = chart.addSeries(LC.LineSeries, { color: col, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }, 0);
+      const e = ema(c, n); s.setData(bars.map((b, i) => ({ time: b.time, value: e[i] }))); emaS.push(s);
+    });
+  }
+  if (volS) { chart.removeSeries(volS); volS = null; }
+  if (rsiS) { chart.removeSeries(rsiS); rsiS = null; }
+  let pane = 1;
+  if (document.getElementById("vol").checked) {
+    volS = chart.addSeries(LC.HistogramSeries, { priceFormat: { type: "volume" } }, pane++);
+    volS.setData(bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? HubTheme.upVol : HubTheme.downVol })));
+  }
+  if (document.getElementById("rsi").checked) {
+    rsiS = chart.addSeries(LC.LineSeries, { color: HubTheme.accent, lineWidth: 1 }, pane++);
+    const r = rsi(bars.map((b) => b.close)); rsiS.setData(bars.map((b, i) => (r[i] == null ? { time: b.time } : { time: b.time, value: r[i] })));
+    rsiS.createPriceLine({ price: 70, color: HubTheme.faint, lineStyle: 2 }); rsiS.createPriceLine({ price: 30, color: HubTheme.faint, lineStyle: 2 });
+  }
+}
+
+let loadGen = 0;
+async function load() {
+  const my = ++loadGen;               // a newer switch cancels this one
+  if (stop) { stop(); stop = null; }
+  const fresh = await LabFeed.history(sym, tf, null, 1000, srcOf(sym));
+  if (my !== loadGen) return;         // user switched again while loading: drop stale data
+  bars = fresh;
+  paintAll();
+  drawings.clear();
+  let lastRepaint = 0;
+  stop = LabFeed.live(sym, tf, (b) => {
+    if (my !== loadGen) return;
+    const last = bars[bars.length - 1];
+    if (last && b.time < last.time) return;
+    const isNew = !last || b.time > last.time;
+    if (isNew) bars.push(b); else bars[bars.length - 1] = b;
+    price.update(priceData(b));
+    if (volS) volS.update({ time: b.time, value: b.volume, color: b.close >= b.open ? HubTheme.upVol : HubTheme.downVol });
+    if (isNew || Date.now() - lastRepaint > 2000) { lastRepaint = Date.now(); if (isNew) paintAll(); }
+  }, srcOf(sym));
+}
+
+chart.timeScale().subscribeVisibleLogicalRangeChange(async (r) => {
+  if (!r || r.from > 20 || loadingOlder || !bars.length) return;
+  loadingOlder = true;
+  try {
+    const older = await LabFeed.history(sym, tf, bars[0].time * 1000 - 1, 1000, srcOf(sym));
+    const fresh = older.filter((b) => b.time < bars[0].time);
+    if (fresh.length) { bars = fresh.concat(bars); paintAll(); }
+  } finally { loadingOlder = false; }
+});
+
+// ---- controls ----
+const symSel = document.getElementById("sym");
+// Remote MT5 groups first, then Bybit, then the Deriv backup feed, then Binance crypto. Stock lists over 500 stay out of this menu (Vela/KLineChart search them).
+["arm-metal", "arm-crypto", "arm-forex", "arm-index", "arm-energy", "arm-other", "arm-stock", "bybit-metal", "bybit-perp", "bybit-spot", "bybit-futures", "bybit-inverse", "bybit-mark", "bybit-index", "commodity", "forex", "indices", "crypto"].forEach((g) => {
+  // Very long lists are cut to the 150 most traded here; Vela and KLineChart search every symbol.
+  if (g === "arm-stock" && LabSymbols.filter((s) => s.group === g).length > 500) return;
+  const list = LabSymbols.filter((s) => s.group === g).slice(0, g.startsWith("bybit") ? 150 : undefined); if (!list.length) return;
+  const og = document.createElement("optgroup"); og.label = { "arm-metal": "Remote MT5 - Metals", "arm-forex": "Remote MT5 - Forex", "arm-index": "Remote MT5 - Indices", "arm-other": "Remote MT5 - Other", "arm-crypto": "Remote MT5 - Crypto", "arm-energy": "Remote MT5 - Energies", "arm-stock": "Remote MT5 - Stocks", "bybit-metal": "Bybit - Gold & Metals", "bybit-perp": "Bybit - USDT Perpetuals", "bybit-spot": "Bybit - Spot", "bybit-futures": "Bybit - Dated Futures", "bybit-inverse": "Bybit - Inverse (coin margined)", "bybit-mark": "Bybit - Mark Price", "bybit-index": "Bybit - Index Price", forex: "Deriv/MT5 - Forex", commodity: "Deriv/MT5 - Commodities", crypto: "Crypto", indices: "Deriv - Indices" }[g];
+  list.forEach((s) => og.appendChild(new Option(`${s.ticker}  ${s.name}`, s.ticker))); symSel.appendChild(og);
+});
+symSel.value = sym;
+symSel.onchange = (e) => { sym = e.target.value; LabNotify(sym, tf); load(); };
+const tfBox = document.getElementById("tfs");
+LabTF.list.forEach((t) => { const b = document.createElement("button"); b.textContent = t; b.dataset.tf = t; b.onclick = () => { tf = t; markTF(); LabNotify(sym, tf); load(); }; tfBox.appendChild(b); });
+function markTF() { tfBox.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.tf === tf)); }
+document.getElementById("style").onchange = (e) => { style = e.target.value; makePrice(); paintAll(); };
+["ema", "vol", "rsi"].forEach((id) => (document.getElementById(id).onchange = paintAll));
+
+const all = document.getElementById("alltools");
+Object.keys(LD.OVERLAY_SPECS).sort().forEach((k) => all.add(new Option(k.replace(/-/g, " "), k)));
+all.onchange = () => { if (all.value) drawings.setTool(all.value); };
+document.querySelectorAll("[data-quick]").forEach((b) => (b.onclick = () => drawings.setTool(b.dataset.quick || null)));
+function markTools() { const t = drawings.tool(); document.querySelectorAll("[data-quick]").forEach((b) => b.classList.toggle("on", (b.dataset.quick || null) === t)); if (!t) all.value = ""; }
+
+function addCodeTrendline() {
+  const n = bars.length, from = Math.max(2, n - 120), lows = [];
+  for (let i = from; i < n - 2; i++) { const b = bars[i]; if (b.low < bars[i-1].low && b.low < bars[i-2].low && b.low < bars[i+1].low && b.low < bars[i+2].low) lows.push(b); }
+  if (lows.length < 2) return null;
+  const a = lows.reduce((m, b) => (b.low < m.low ? b : m), lows[0]);
+  const later = lows.filter((b) => b.time > a.time);
+  const c = later.length ? later.reduce((m, b) => (b.low < m.low ? b : m), later[0]) : lows[lows.length - 1];
+  return drawings.add({ kind: "trend-line", points: [{ time: a.time, price: a.low }, { time: c.time, price: c.low }] });
+}
+document.getElementById("auto").onclick = addCodeTrendline;
+document.getElementById("clear").onclick = () => drawings.clear();
+
+function applyTheme() {
+  const t = HubTheme;
+  chart.applyOptions({ layout: { background: { color: t.bg }, textColor: t.dim, fontFamily: t.font, panes: { separatorColor: t.line, separatorHoverColor: t.accent } },
+    grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } }, rightPriceScale: { borderColor: t.line }, timeScale: { borderColor: t.line } });
+  makePrice(); paintAll();
+}
+window.labChart = { name: "lightweight", applyTheme, setMarket: (s, t) => { sym = s; tf = t || tf; if (![...symSel.options].some((o) => o.value === s)) symSel.add(new Option(s, s)); symSel.value = s; markTF(); return load(); }, setTF: (t) => { tf = t; markTF(); return load(); }, addCodeTrendline, drawingCount: () => drawings.drawings().length, barCount: () => bars.length };
+makePrice(); markTF(); load();
+</script>
+</body></html>

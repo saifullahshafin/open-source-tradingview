@@ -1,0 +1,3 @@
+websockets>=12,<18
+# Optional, Windows only, for a MetaTrader 5 terminal on this PC (LOCAL_MT5=1):
+# MetaTrader5
