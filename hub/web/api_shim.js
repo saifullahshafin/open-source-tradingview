@@ -91,6 +91,8 @@
     const u = new URL(raw, location.href);
     if (u.origin !== location.origin || !u.pathname.startsWith("/api/")) return nativeFetch(input, init);
     const p = u.pathname, q = u.searchParams, body = init && init.body;
+    // TradingView script lists + open-source code: a real route on the site (Cloudflare Pages Function), when it has one.
+    if (p.startsWith("/api/tv/")) return nativeFetch(input, init);
     try {
       if (p.startsWith("/api/bars")) {
         const feed = F.feeds[q.get("source") || "binance"];

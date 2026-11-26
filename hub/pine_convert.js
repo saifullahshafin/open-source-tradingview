@@ -53,7 +53,8 @@
     const fd = /(?:^|\n)[ \t]*([A-Za-z_]\w*)\s*\([^()\n]*\)\s*=>/g; while ((m = fd.exec(code))) fns.add(m[1]);
     s.fns = fns; // own FUNCTIONS block ta./math. prefixing; an own VARIABLE named atr does not
     const re = /(?:^|\n)[ \t]*(?:var\s+|varip\s+)?(?:(?:float|int|bool|string|color|line|label|box|table)\s+)?([A-Za-z_]\w*)\s*(?:=(?!=)|\([^()\n]*\)\s*=>)/g;
-    while ((m = re.exec(code))) s.add(m[1]);
+    // a "name=" line that continues a call (previous line ends with "(" or ",") is a named argument, not a variable
+    while ((m = re.exec(code))) if (!/[(,]\s*$/.test(code.slice(Math.max(0, m.index - 200), m.index + (m[0].length - m[0].trimStart().length)))) s.add(m[1]);
     const tup = /\[\s*([\w\s,]+)\]\s*=(?!=)/g; while ((m = tup.exec(code))) m[1].split(",").forEach((x) => s.add(x.trim()));
     const fr = /\bfor\s+([A-Za-z_]\w*)\s*=/g; while ((m = fr.exec(code))) s.add(m[1]);
     // function parameters
@@ -164,7 +165,7 @@
       code = code.replace(new RegExp("(?<![.\\w])" + r + "(?![\\w])", "g"), (m, off, s) => {
         const after = s.slice(off + r.length), before = s.slice(Math.max(0, off - 200), off);
         const isNamedArg = /^\s*=(?!=)/.test(after) && /[(,]\s*$/.test(before);
-        return isNamedArg ? m : r + "_";
+        return isNamedArg || /^\s*\./.test(after) ? m : r + "_";   // text.align_left = the namespace, not the variable
       });
       W.push(`"${r}" is a reserved word in v5, renamed to ${r}_`);
     });
@@ -184,10 +185,45 @@
     });
   }
 
+  // All versions (2026-11-25): Pine keeps variables and built-in functions/namespaces apart, the engine (JavaScript)
+  // does not. A script variable named like one ("barcolor = ..." then "barcolor(barcolor)", the Range Filter script)
+  // replaced the function: "e is not a function". Rename such a VARIABLE to name_v everywhere it is used as a value;
+  // calls name(...), namespace uses name.x and named arguments name=... stay as they are.
+  const SHADOW = ("plot plotshape plotchar plotarrow plotcandle plotbar barcolor bgcolor fill hline alertcondition alert nz fixnan " +
+    "input timestamp indicator strategy library label line box table array matrix map polyline linefill chart runtime log").split(" ");
+  function shadow(code, W) {
+    const own = declared(code);
+    SHADOW.forEach((r) => {
+      if (!own.has(r) || own.fns.has(r)) return;
+      code = code.replace(new RegExp("(?<![.\\w#])" + r + "(?![\\w])", "g"), (m, off, str) => {
+        const after = str.slice(off + r.length), before = str.slice(Math.max(0, off - 200), off);
+        if (/^\s*[(.]/.test(after)) return m;                                   // the real function / namespace
+        if (/^\s*=(?!=)/.test(after) && /[(,]\s*$/.test(before)) return m;      // named argument key
+        return r + "_v";
+      });
+      W.push(`variable "${r}" has the name of a Pine function, renamed to ${r}_v for the engine`);
+    });
+    return code;
+  }
+
+  // All versions (2026-11-25): a generic input() whose default is a price source (input(defval=close)) is a source
+  // input in Pine. The engine only turns the chart's saved "close" back into the price series for input.source(), so
+  // the generic form gave "closeNaN" everywhere and the indicator drew nothing (Range Filter). Write it as input.source.
+  const SRC_KW = new Set("open high low close hl2 hlc3 ohlc4 hlcc4 volume".split(" "));
+  function srcInputs(code, W) {
+    return rewriteCalls(code, "input", (a) => {
+      const n0 = named(a[0]), d = a.find((x) => named(x) && named(x).k === "defval");
+      const v = d ? named(d).v : (!n0 ? a[0].trim() : "");
+      if (!SRC_KW.has(v) || a.some((x) => named(x) && named(x).k === "type")) return null;
+      W.push("input(" + v + ") written as input.source(" + v + ")");
+      return "input.source(" + a.join(",").replace(/^\s+/, "") + ")";
+    });
+  }
+
   function convert(source) {
     const vm = String(source).match(/\/\/\s*@version\s*=\s*(\d+)/), from = vm ? +vm[1] : 1, W = [];
     if (from >= 5) {
-      const mm = mask(String(source)), c2 = compat(mm.code, mm.store, W);
+      const mm = mask(String(source)), c2 = srcInputs(shadow(compat(mm.code, mm.store, W), W), W);
       return c2 === mm.code ? { source, from, changed: false, warnings: [] } : { source: unmask(c2, mm.store), from, changed: true, compatOnly: true, warnings: W };
     }
     let { code, store } = mask(String(source).replace(/\r\n/g, "\n"));
@@ -195,7 +231,7 @@
     if (from <= 2) code = selfRefs(code, W);
     if (from <= 3) code = v3to4(code, W, own);
     code = v4to5(code, W, own);
-    code = compat(code, store, W);
+    code = srcInputs(shadow(compat(code, store, W), W), W);
     let out = unmask(code, store);
     out = vm ? out.replace(/\/\/\s*@version\s*=\s*\d+/, "//@version=5") : "//@version=5\n" + out;
     if (from <= 2) W.push("converted from Pine v" + from + " (no @version tag means v1): check the result carefully");

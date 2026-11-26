@@ -98,12 +98,14 @@
   .dlg-chips button { background:var(--raised); color:var(--text); border:1px solid var(--line); border-radius:14px; padding:5px 12px; cursor:pointer; font:inherit; font-size:12px }
   .dlg-chips button.on { background:var(--text); color:var(--bg); border-color:var(--text) }
   .dlg-list { flex:1; overflow:auto; padding:6px 8px 12px }
-  .dlg-colh { font-size:10px; letter-spacing:.08em; color:var(--faint); padding:8px 10px 6px 38px }
-  .dlg-row { display:grid; grid-template-columns:24px 1fr auto; column-gap:6px; align-items:center; padding:7px 10px 7px 6px; border-radius:5px; cursor:pointer }
+  .dlg-colh { font-size:10px; letter-spacing:.08em; color:var(--faint); padding:8px 10px 6px 36px; display:grid; grid-template-columns:1fr minmax(0,150px) 52px; column-gap:6px } .dlg-colh span:last-child { text-align:right }
+  .dlg-row { display:grid; grid-template-columns:24px 1fr minmax(0,150px) 52px; column-gap:6px; align-items:center; padding:7px 10px 7px 6px; border-radius:5px; cursor:pointer }
   .dlg-row:hover { background:var(--raised) } .dlg-row.locked .nm { color:var(--dim) }
   .dlg-row .nm { grid-column:2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .dlg-row .sub { grid-column:3; color:var(--dim); font-size:11px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .dlg-row .msg { grid-column:2 / 4; font-size:11px; color:var(--ok); margin-top:3px } .dlg-row .msg.bad { color:var(--bad) }
+  .dlg-row .sub { grid-column:3; color:var(--dim); font-size:11px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .dlg-row .cnt { grid-column:4; grid-row:1; color:var(--dim); font-size:11px; text-align:right; font-variant-numeric:tabular-nums }
+  @media (max-width:520px) { .dlg-row, .dlg-colh { grid-template-columns:24px 1fr minmax(0,90px) 44px } .dlg-colh { grid-template-columns:1fr minmax(0,90px) 44px } }
+  .dlg-row .msg { grid-column:2 / 5; font-size:11px; color:var(--ok); margin-top:3px } .dlg-row .msg.bad { color:var(--bad) }
   .dlg-row .star { grid-row:1; background:none; border:0; padding:0; cursor:pointer; display:grid; place-items:center; opacity:0 }
   .dlg-row:hover .star, .dlg-row .star.on { opacity:1 }
   .dlg-row .star svg { fill:none; stroke:var(--dim); stroke-width:1.6 } .dlg-row .star.on svg { fill:var(--accent); stroke:var(--accent) }

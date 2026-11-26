@@ -75,10 +75,10 @@
         let name = strLit(title && title.val) || (fn === "hline" ? "Line " + n : "Plot " + n);
         while (used.has(name)) name += " ";
         used.add(name);
-        const id = "__hubS" + n;
+        const id = "__hubS" + n, wv = width && /^\d+$/.test(width.val.trim()) ? +width.val.trim() : 1;
         const decl = [
           `${id}c = input.color(${colorVal}, ${q(name + " colour")}, group="Style")`,
-          `${id}w = input.int(${width && /^\d+$/.test(width.val) ? width.val : 1}, ${q(name + " thickness")}, minval=1, maxval=4, group="Style")`,
+          `${id}w = input.int(${wv}, ${q(name + " thickness")}, minval=${Math.min(1, wv)}, maxval=${Math.max(4, wv)}, group="Style")`,   // range widened to the script's own width (0 or 15 failed)
         ];
         const showable = fn === "plot" && !named.display;
         if (showable) decl.push(`${id}v = input.bool(true, ${q("Show " + name)}, group="Style")`);
