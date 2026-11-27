@@ -44,3 +44,9 @@ backups/
 
 # local session notes (handoff for a new agent session)
 chat.md
+
+# Agent Council skill: per-machine install (npx skills add magnus919/agent-skills --skill agent-council)
+.agents/skills/agent-council/
+.claude/skills/
+agent/
+
