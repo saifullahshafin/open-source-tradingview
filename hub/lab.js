@@ -125,16 +125,21 @@ window.addEventListener("message", (e) => {
   if (e.origin !== location.origin || !e.data || !window.labChart) return;
   if (e.data.cmd === "set" && labChart.setMarket) labChart.setMarket(e.data.symbol, e.data.tf);
   if (e.data.cmd === "layout" && labChart.setLayout) labChart.setLayout(e.data.layout);
-  if (e.data.cmd === "pine:add") {
-    const reply = (r) => window.parent.postMessage({ evt: "pine", key: e.data.key, ...r }, location.origin);
-    if (!labChart.addPine) reply({ ok: false, error: "Pine indicators run on Vela for now (the other engines get them in step 4)." });
-    else labChart.addPine(e.data.source, e.data.inputs, e.data.props).then(reply);
-  }
-  if (e.data.cmd === "pine:remove" && labChart.removePine) labChart.removePine(e.data.id);
   // Indicators dialog: Vela natives catalog / add, and the live list of what is on the chart.
   const answer = (r) => window.parent.postMessage({ evt: "reply", rid: e.data.rid, ...r }, location.origin);
+  if (e.data.cmd === "pine:add") {
+    const reply = (r) => {
+      if (e.data.rid != null) answer({ key: e.data.key, ...r });
+      else window.parent.postMessage({ evt: "pine", key: e.data.key, ...r }, location.origin);
+    };
+    if (!labChart.addPine) reply({ ok: false, error: "Pine indicators run on Vela for now (the other engines get them in step 4)." });
+    else labChart.addPine(e.data.source, e.data.inputs, e.data.props, e.data.cell, e.data.cellId).then(reply);
+  }
+  if (e.data.cmd === "pine:remove" && labChart.removePine) labChart.removePine(e.data.id);
   if (e.data.cmd === "native:list") { if (!labChart.natives) answer({ ok: false, list: [] }); else labChart.natives().then((list) => answer({ ok: true, list }), (err) => answer({ ok: false, list: [], error: String(err) })); }
-  if (e.data.cmd === "native:add") answer(labChart.addNative ? labChart.addNative(e.data.type, e.data.inputs) : { ok: false, error: "Vela only" });
+  if (e.data.cmd === "native:add") answer(labChart.addNative ? labChart.addNative(e.data.type, e.data.inputs, e.data.cell, e.data.cellId) : { ok: false, error: "Vela only" });
+  if (e.data.cmd === "cell:active") answer(labChart.activeCell ? labChart.activeCell() : { ok: true, index: 0, id: "", count: 1 });
+  if (e.data.cmd === "cells:count") answer(labChart.cellsCount ? labChart.cellsCount() : { ok: true, count: 1 });
   if (e.data.cmd === "chart:list") answer({ ok: true, list: labChart.onChart ? labChart.onChart() : [] });
   // TradeX layouts (layouts.js): read / restore the chart's layout document (Vela only).
   if (e.data.cmd === "doc:get") { try { answer(labChart.getDoc ? { ok: true, doc: labChart.getDoc() } : { ok: false, error: "layouts need the Vela engine" }); } catch (err) { answer({ ok: false, error: String(err) }); } }
