@@ -1,0 +1,374 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>TradeX - Options Backtest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="theme.js"></script>
+<style>
+  * { box-sizing: border-box }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:13px/1.35 var(--font) }
+  #app { position:absolute; inset:0; display:grid; grid-template-rows:38px 1fr; }
+  #bar { display:flex; align-items:center; gap:10px; padding:0 10px; background:var(--panel);
+         border-bottom:1px solid var(--line); white-space:nowrap; overflow-x:auto }
+  #brand { font-weight:700; color:var(--accent); font-size:14px; text-decoration:none }
+  #bar .ttl { font-weight:600 }
+  #bar .sp { flex:1 }
+  #bar a.link { color:var(--dim); text-decoration:none; font-size:12px; padding:4px 8px; border:1px solid var(--line); border-radius:4px }
+  #bar a.link:hover { color:var(--text); background:var(--raised) }
+  #main { display:grid; grid-template-columns:310px 1fr; min-height:0 }
+  #side { background:var(--panel); border-right:1px solid var(--line); overflow:auto }
+  #out { overflow:auto; padding:14px 16px 40px; min-width:0 }
+  .set { padding:10px 12px; border-bottom:1px solid var(--grid) }
+  .set h4 { margin:0 0 8px; font-size:11px; font-weight:600; color:var(--dim); letter-spacing:.05em; text-transform:uppercase }
+  .set label { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; font-size:12px; color:var(--dim) }
+  .set label > span { flex:1 }
+  input[type=text], input[type=date], input[type=time], input[type=number], select {
+    width:118px; background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:3px; padding:4px 6px; font:12px var(--mono) }
+  select { width:126px }
+  input:focus, select:focus { outline:none; border-color:var(--accent) }
+  input[type=checkbox] { accent-color: var(--accent) }
+  #run { margin:12px; width:calc(100% - 24px); padding:9px; border:0; border-radius:4px; background:var(--accent);
+         color:var(--accentInk); font:600 13px var(--font); cursor:pointer }
+  #run:disabled { opacity:.55; cursor:default }
+  #prog { padding:0 12px 12px; font:11px var(--mono); color:var(--dim); min-height:28px; word-break:break-word }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(132px, 1fr)); gap:8px; margin-bottom:12px }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:8px 10px }
+  .card .k { font:10px var(--mono); letter-spacing:.05em; text-transform:uppercase; color:var(--dim) }
+  .card .v { font:600 16px var(--mono); margin-top:3px }
+  .up { color:var(--ok) } .down { color:var(--bad) }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:5px; margin-bottom:12px }
+  .panel .hd { display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--line) }
+  .panel .hd b { font-size:12px; font-weight:600 }
+  .panel .hd .sp { flex:1 }
+  .seg { display:flex; gap:1px }
+  .seg button { background:transparent; color:var(--dim); border:0; border-radius:3px; padding:4px 8px; font:11px var(--font); cursor:pointer }
+  .seg button.on { color:var(--accentInk); background:var(--accent) }
+  canvas { display:block; width:100% }
+  #eqWrap { padding:8px 4px 4px; position:relative }
+  #tip { position:absolute; pointer-events:none; background:var(--panel); border:1px solid var(--line); border-radius:4px;
+         padding:5px 7px; font:11px var(--mono); color:var(--text); display:none; z-index:3; white-space:pre }
+  table { width:100%; border-collapse:collapse; font:12px var(--mono) }
+  th { text-align:right; font:10px var(--mono); letter-spacing:.04em; text-transform:uppercase; color:var(--dim);
+       padding:7px 8px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel); cursor:default }
+  td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--grid); white-space:nowrap }
+  th:first-child, td:first-child, th.l, td.l { text-align:left }
+  tbody tr:hover { background:var(--raised); cursor:pointer }
+  tr.legs td { background:color-mix(in srgb, var(--panel) 70%, var(--bg)); color:var(--dim); cursor:default }
+  tr.legs:hover { background:color-mix(in srgb, var(--panel) 70%, var(--bg)) }
+  .note { padding:10px 12px; font-size:11px; color:var(--dim); line-height:1.5 }
+  .note b { color:var(--text); font-weight:600 }
+  .empty { padding:34px 16px; color:var(--dim); text-align:center; font-size:12px }
+  .badge { font:10px var(--mono); padding:2px 5px; border:1px solid var(--line); border-radius:3px; color:var(--dim) }
+  @media (max-width:860px) { #main { grid-template-columns:1fr } #side { border-right:0; border-bottom:1px solid var(--line); max-height:44vh } }
+</style></head>
+<body>
+<div id="app">
+  <div id="bar">
+    <a href="/hub.html" id="brand">TradeX</a>
+    <span class="ttl">Options Backtest</span>
+    <span class="badge" id="dataBadge">research only - no orders</span>
+    <span class="sp"></span>
+    <a class="link" href="/hub.html">Open charts</a>
+  </div>
+  <div id="main">
+    <div id="side">
+      <div class="set"><h4>Instrument &amp; period</h4>
+        <label><span>Index</span><select id="symbol"><option>NIFTY</option><option>BANKNIFTY</option></select></label>
+        <label><span>From</span><input type="date" id="start"></label>
+        <label><span>To</span><input type="date" id="end"></label>
+      </div>
+      <div class="set"><h4>Schedule</h4>
+        <label><span>Entry day</span><select id="entry_weekday">
+          <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option>
+          <option value="3">Thursday</option><option value="4">Friday</option></select></label>
+        <label><span>Entry time</span><input type="time" id="entry_time"></label>
+        <label><span>Exit day</span><select id="exit_weekday">
+          <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option>
+          <option value="3">Thursday</option><option value="4">Friday</option></select></label>
+        <label><span>Exit time</span><input type="time" id="exit_time"></label>
+        <label><span>Days to expiry</span><input type="number" id="target_dte" min="1" max="45" step="1"></label>
+      </div>
+      <div class="set"><h4>Strikes &amp; size</h4>
+        <label><span>Target delta</span><input type="number" id="delta" min="0.05" max="0.6" step="0.01"></label>
+        <label><span>Sell lots (CE &amp; PE)</span><input type="number" id="lots_sell" min="0" step="1"></label>
+        <label><span>Buy same strike, monthly (lots)</span><input type="number" id="lots_buy_same" min="0" step="1"></label>
+        <label><span>Wing distance (points)</span><input type="number" id="wing_points" min="0" step="50"></label>
+        <label><span>Wing lots</span><input type="number" id="wing_lots" min="0" step="1"></label>
+        <label><span>Wing expiry</span><select id="wing_expiry"><option value="near">Near (8 DTE)</option><option value="monthly">Monthly</option></select></label>
+        <label><span>Buy monthly hedge</span><input type="checkbox" id="monthly_hedge"></label>
+        <label><span>Lot size (blank = NSE)</span><input type="text" id="lot_size" placeholder="auto"></label>
+      </div>
+      <div class="set"><h4>Costs &amp; rates</h4>
+        <label><span>Apply cost model</span><input type="checkbox" id="costs"></label>
+        <label><span>Risk-free rate</span><input type="number" id="risk_free" min="0" max="0.2" step="0.005"></label>
+      </div>
+      <button id="run">Run backtest</button>
+      <div id="prog">Idle. First run downloads NSE bhavcopy for every trading day (a few minutes).</div>
+    </div>
+    <div id="out">
+      <div id="results"><div class="empty">Set your parameters and press <b>Run backtest</b>.</div></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const IST = 5.5 * 3600e3;
+const state = { id:null, result:null, mode:"hourly", open:null, timer:null };
+const num = v => (v===null||v===undefined||v==="") ? null : Number(v);
+
+function fmtMoney(v){
+  const n = Math.round(v);
+  const s = Math.abs(n).toLocaleString("en-IN");
+  return (n<0?"-":"") + "\u20B9" + s;
+}
+function fmtDay(ts){
+  return new Date(ts + IST).toISOString().slice(0,10);
+}
+function fmtTime(ts){
+  const d = new Date(ts + IST);
+  return d.toISOString().slice(11,16);
+}
+
+async function loadDefaults(){
+  const r = await fetch("/api/backtest/defaults").then(r=>r.json());
+  if(!r.ok) return;
+  const d = r.defaults;
+  $("#symbol").value = d.symbol; $("#start").value = d.start;
+  $("#end").value = d.end || new Date().toISOString().slice(0,10);
+  $("#entry_weekday").value = d.entry_weekday; $("#exit_weekday").value = d.exit_weekday;
+  $("#entry_time").value = d.entry_time; $("#exit_time").value = d.exit_time;
+  $("#target_dte").value = d.target_dte; $("#delta").value = d.delta;
+  $("#lots_sell").value = d.lots_sell; $("#lots_buy_same").value = d.lots_buy_same;
+  $("#wing_points").value = d.wing_points; $("#wing_lots").value = d.wing_lots;
+  $("#wing_expiry").value = d.wing_expiry; $("#monthly_hedge").checked = !!d.monthly_hedge;
+  $("#costs").checked = !!d.costs; $("#risk_free").value = d.risk_free;
+}
+
+function settings(){
+  return {
+    symbol: $("#symbol").value, start: $("#start").value, end: $("#end").value || null,
+    entry_weekday: +$("#entry_weekday").value, exit_weekday: +$("#exit_weekday").value,
+    entry_time: $("#entry_time").value, exit_time: $("#exit_time").value,
+    target_dte: +$("#target_dte").value, delta: +$("#delta").value,
+    lots_sell: +$("#lots_sell").value, lots_buy_same: +$("#lots_buy_same").value,
+    wing_points: +$("#wing_points").value, wing_lots: +$("#wing_lots").value,
+    wing_expiry: $("#wing_expiry").value, monthly_hedge: $("#monthly_hedge").checked,
+    lot_size: num($("#lot_size").value), costs: $("#costs").checked, risk_free: +$("#risk_free").value
+  };
+}
+
+async function start(){
+  clearInterval(state.timer);
+  $("#run").disabled = true; $("#prog").textContent = "Starting...";
+  const r = await fetch("/api/backtest/run", {method:"POST", headers:{"Content-Type":"application/json"},
+                                              body: JSON.stringify({settings: settings()})}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+  if(!r.ok){ $("#run").disabled=false; $("#prog").textContent = "Failed: " + (r.error||"unknown error"); return; }
+  state.id = r.id;
+  state.timer = setInterval(poll, 1500);
+  poll();
+}
+
+async function poll(){
+  if(!state.id) return;
+  const r = await fetch(`/api/backtest/status?id=${state.id}&result=1`).then(r=>r.json()).catch(()=>null);
+  if(!r || !r.job) return;
+  const j = r.job;
+  $("#prog").textContent = j.state === "running" ? j.progress : (j.state === "done" ? "Done. " + j.progress : "Error: " + j.error);
+  if(j.state === "done" && j.result){
+    clearInterval(state.timer); $("#run").disabled = false;
+    state.result = j.result; render();
+  } else if(j.state === "error"){
+    clearInterval(state.timer); $("#run").disabled = false;
+  }
+}
+
+/* ---------------- charts ---------------- */
+function prep(cv, h){
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 600;
+  cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+  cv.style.height = h + "px";
+  const c = cv.getContext("2d"); c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,w,h);
+  return {c, w, h};
+}
+function cssVar(n, fb){ return getComputedStyle(document.body).getPropertyValue(n).trim() || fb; }
+
+function lineChart(cv, pts, opts){
+  const {c,w,h} = prep(cv, opts.height || 240);
+  const padL = 58, padR = 12, padT = 12, padB = 22;
+  const grid = cssVar("--grid", "#252a33"), dim = cssVar("--dim", "#8892a4"), accent = cssVar("--accent", "#4da3ff");
+  if(!pts.length){ c.fillStyle = dim; c.fillText("No data", 10, 20); return; }
+  let lo = Math.min(...pts.map(p=>p.v)), hi = Math.max(...pts.map(p=>p.v));
+  if(opts.zero){ lo = Math.min(lo,0); hi = Math.max(hi,0); }
+  if(hi === lo){ hi += 1; lo -= 1; }
+  const pad = (hi-lo)*0.08; lo -= pad; hi += pad;
+  const x = i => padL + (w-padL-padR) * (pts.length<2 ? 0.5 : i/(pts.length-1));
+  const y = v => padT + (h-padT-padB) * (1 - (v-lo)/(hi-lo));
+  // horizontal grid + value labels
+  c.font = "10px ui-monospace, monospace"; c.textBaseline = "middle";
+  for(let k=0;k<=4;k++){
+    const v = lo + (hi-lo)*k/4, yy = y(v);
+    c.strokeStyle = grid; c.beginPath(); c.moveTo(padL, yy); c.lineTo(w-padR, yy); c.stroke();
+    c.fillStyle = dim; c.textAlign = "right"; c.fillText(opts.yFmt ? opts.yFmt(v) : Math.round(v), padL-6, yy);
+  }
+  // zero line
+  if(lo < 0 && hi > 0){ c.strokeStyle = cssVar("--line","#333a46"); c.beginPath(); c.moveTo(padL,y(0)); c.lineTo(w-padR,y(0)); c.stroke(); }
+  // area
+  const grad = c.createLinearGradient(0,padT,0,h-padB);
+  grad.addColorStop(0, opts.fillColor || "rgba(77,163,255,.28)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  c.beginPath(); c.moveTo(x(0), y(pts[0].v));
+  pts.forEach((p,i)=>c.lineTo(x(i), y(p.v)));
+  c.lineTo(x(pts.length-1), h-padB); c.lineTo(x(0), h-padB); c.closePath(); c.fillStyle = grad; c.fill();
+  // line
+  c.beginPath(); pts.forEach((p,i)=> i? c.lineTo(x(i), y(p.v)) : c.moveTo(x(i),y(p.v)));
+  c.strokeStyle = opts.color || accent; c.lineWidth = 1.6; c.stroke();
+  // x labels (months)
+  c.textAlign = "center"; c.fillStyle = dim; let last = "";
+  pts.forEach((p,i)=>{
+    const d = new Date(p.t + IST), lbl = d.toISOString().slice(0,7);
+    if(i===0 || (d.getUTCDate()<=3 && lbl!==last)){ c.fillText(lbl, Math.min(w-padR-14, Math.max(padL+14, x(i))), h-8); last = lbl; }
+  });
+  return {x, y, padL, padR, w, h, pts, lo, hi};
+}
+
+function barChart(cv, bars, opts){
+  const {c,w,h} = prep(cv, opts.height || 170);
+  const padL = 58, padR = 12, padT = 10, padB = 20;
+  const grid = cssVar("--grid","#252a33"), dim = cssVar("--dim","#8892a4");
+  const ok = cssVar("--ok","#3ecf8e"), bad = cssVar("--bad","#ef5350");
+  if(!bars.length){ c.fillStyle = dim; c.fillText("No data", 10, 20); return; }
+  let lo = Math.min(0,...bars.map(b=>b.v)), hi = Math.max(0,...bars.map(b=>b.v));
+  if(hi===lo){ hi+=1; lo-=1; }
+  const y = v => padT + (h-padT-padB)*(1-(v-lo)/(hi-lo));
+  c.font="10px ui-monospace, monospace"; c.textBaseline="middle";
+  for(let k=0;k<=3;k++){
+    const v = lo + (hi-lo)*k/3, yy = y(v);
+    c.strokeStyle = grid; c.beginPath(); c.moveTo(padL,yy); c.lineTo(w-padR,yy); c.stroke();
+    c.fillStyle = dim; c.textAlign="right"; c.fillText(Math.round(v/1000)+"k", padL-6, yy);
+  }
+  const bw = Math.max(1, (w-padL-padR)/bars.length - 1);
+  bars.forEach((b,i)=>{
+    const xx = padL + (w-padL-padR)*i/bars.length, y0 = y(0), y1 = y(b.v);
+    c.fillStyle = b.v >= 0 ? ok : bad;
+    c.fillRect(xx+bw*0.1, Math.min(y0,y1), bw*0.8, Math.max(1, Math.abs(y1-y0)));
+  });
+  c.fillStyle = dim; c.textAlign = "left"; c.fillText("W1", padL, h-7);
+  c.textAlign = "right"; c.fillText("W"+bars.length, w-padR, h-7);
+}
+
+/* ---------------- render ---------------- */
+function render(){
+  const r = state.result, s = r.summary;
+  const cls = v => v >= 0 ? "up" : "down";
+  const cards = [
+    ["Net P&L", fmtMoney(s.total_net), cls(s.total_net)],
+    ["Weeks", `${s.weeks}`, ""],
+    ["Win rate", s.win_rate + "%", ""],
+    ["Avg / week", fmtMoney(s.avg_week), cls(s.avg_week)],
+    ["Best week", fmtMoney(s.best_week), cls(s.best_week)],
+    ["Worst week", fmtMoney(s.worst_week), cls(s.worst_week)],
+    ["Max drawdown", fmtMoney(s.max_drawdown), s.max_drawdown<0?"down":""],
+    ["Costs", fmtMoney(s.total_costs), ""]
+  ];
+  const st = r.settings;
+  const head = `<div class="cards">${cards.map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("")}</div>`;
+
+  const html = head + `
+    <div class="panel">
+      <div class="hd"><b>Cumulative P&L</b><span class="badge">${st.symbol} · ${s.first||"-"} → ${s.last||"-"}</span>
+        <span class="sp"></span>
+        <div class="seg"><button id="mHour" class="${state.mode==="hourly"?"on":""}">Hourly</button>
+        <button id="mEod" class="${state.mode==="eod"?"on":""}">Friday / EOD</button></div></div>
+      <div id="eqWrap"><canvas id="eq"></canvas><div id="tip"></div></div>
+    </div>
+    <div class="panel"><div class="hd"><b>Week by week P&amp;L</b><span class="sp"></span>
+      <span class="badge">net of costs</span></div><div id="wkWrap" style="padding:6px 4px"><canvas id="wkc"></canvas></div></div>
+    <div class="panel"><div class="hd"><b>Every week: entries, strikes, P&amp;L</b><span class="sp"></span>
+      <span class="badge">click a row for legs</span></div>
+      <div style="max-height:560px;overflow:auto"><table id="tbl">
+        <thead><tr><th class="l">Week</th><th class="l">Entry</th><th class="l">Exit</th><th>CE strike</th><th>PE strike</th>
+        <th class="l">Expiry</th><th>DTE</th><th>Spot entry</th><th>Spot exit</th><th>Gross</th><th>Costs</th><th>Net</th><th>Cum</th></tr></thead>
+        <tbody id="tbody"></tbody></table></div>
+    </div>
+    <div class="panel"><div class="note">
+      <b>Data.</b> Option prices: ${r.data.option_prices}. Spot path: ${r.data.spot_hourly}.
+      Intraday marks: ${r.data.intraday_option_marks}. Entry: ${r.data.entry_fill}.
+      Trading days loaded: ${r.data.trading_days}. Generated ${r.data.generated}.<br>
+      <b>Costs</b> are an estimate (Rs 20/order, STT 0.1% on sell premium, exchange 0.03503%, SEBI, GST 18%, stamp 0.003%).
+      P&amp;L is premium only: no margin, no slippage, no liquidity limits. Research use only.
+    </div></div>`;
+  $("#results").innerHTML = html;
+
+  const curve = r.curve || [];
+  const pts = curve.filter(p => state.mode === "hourly" ? true : (p.eod !== undefined ? p.eod : isEod(p.t)))
+                    .map(p => ({t:p.t, v:p.pnl, wk:p.wk, spot:p.spot, week:p.week}));
+  const chart = lineChart($("#eq"), pts, {height:260, zero:true, yFmt:v=>fmtMoney(v)});
+  const eodPts = curve.filter(p => p.eod !== undefined ? p.eod : isEod(p.t));
+  $("#eqWrap").dataset.eod = JSON.stringify(eodPts.map(p=>({t:p.t,v:p.pnl,wk:p.wk,spot:p.spot})));
+
+  const bars = (r.weeks||[]).filter(w=>w.status==="ok").map(w=>({v:w.net}));
+  barChart($("#wkc"), bars, {});
+
+  const rows = [];
+  for(const w of (r.weeks||[])){
+    if(w.status !== "ok"){
+      rows.push(`<tr class="legs"><td class="l">${w.week||""}</td><td class="l" colspan="12">${w.entry_date||""} - skipped: ${w.reason||""}</td></tr>`);
+      continue;
+    }
+    rows.push(`<tr data-w="${w.week}">
+      <td class="l">${w.week}</td><td class="l">${w.entry_date} ${w.entry_time}</td><td class="l">${w.exit_date} ${w.exit_time}</td>
+      <td>${w.strikes.ce.toFixed(0)}</td><td>${w.strikes.pe.toFixed(0)}</td><td class="l">${w.expiry}</td><td>${w.dte}</td>
+      <td>${w.spot_entry.toFixed(2)}</td><td>${w.spot_exit.toFixed(2)}</td>
+      <td>${fmtMoney(w.gross)}</td><td>${fmtMoney(w.costs)}</td>
+      <td class="${cls(w.net)}">${fmtMoney(w.net)}</td><td class="${cls(w.cum)}">${fmtMoney(w.cum)}</td></tr>`);
+  }
+  $("#tbody").innerHTML = rows.join("");
+  $("#tbody").querySelectorAll("tr[data-w]").forEach(tr=>{
+    tr.onclick = () => toggleWeek(+tr.dataset.w, tr);
+  });
+  $("#mHour").onclick = () => { state.mode="hourly"; render(); };
+  $("#mEod").onclick = () => { state.mode="eod"; render(); };
+  attachTip(chart);
+}
+
+function isEod(ts){
+  const d = new Date(ts + IST);
+  return d.getUTCHours()===15 && d.getUTCMinutes()>=30;
+}
+
+function toggleWeek(n, tr){
+  const next = tr.nextElementSibling;
+  if(next && next.classList.contains("legs-open")){ next.remove(); return; }
+  const w = (state.result.weeks||[]).find(x=>x.week===n && x.status==="ok");
+  if(!w) return;
+  const tr2 = document.createElement("tr");
+  tr2.className = "legs legs-open";
+  const legs = w.legs.map(l=>`${l.side==="S"?"SELL":"BUY "} ${l.kind} ${l.strike.toFixed(0)} ${l.expiry} x${l.lots} @ ${l.entry.toFixed(2)} -> ${(l.exit??0).toFixed(2)}`).join("<br>");
+  const notes = (w.notes||[]).length ? "<br><i>"+w.notes.join("<br>")+"</i>" : "";
+  tr2.innerHTML = `<td colspan="13" class="l" style="padding:8px 12px;line-height:1.6">${legs}
+    <br>delta CE ${w.delta_ce} / PE ${w.delta_pe} · lot ${w.lot} · worst MTM ${fmtMoney(w.max_mtm)} · max DD ${fmtMoney(w.max_dd)}${notes}</td>`;
+  tr.after(tr2);
+}
+
+function attachTip(chart){
+  const cv = $("#eq"), tip = $("#tip");
+  if(!chart) return;
+  cv.onmousemove = ev => {
+    const rect = cv.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    if(mx < chart.padL || mx > chart.w - chart.padR) { tip.style.display="none"; return; }
+    const i = Math.round((mx - chart.padL) / (chart.w - chart.padL - chart.padR) * (chart.pts.length-1));
+    const p = chart.pts[Math.max(0, Math.min(chart.pts.length-1, i))];
+    tip.style.display = "block";
+    tip.textContent = `${fmtDay(p.t)} ${fmtTime(p.t)} IST\nweek ${p.week ?? "-"}  ${fmtMoney(p.v)}\nspot ${p.spot?.toFixed(2) ?? "-"}`;
+    const left = Math.min(chart.w - 130, Math.max(4, mx + 12));
+    tip.style.left = left + "px"; tip.style.top = "12px";
+  };
+  cv.onmouseleave = () => tip.style.display = "none";
+}
+
+$("#run").onclick = start;
+window.addEventListener("resize", ()=>{ if(state.result) render(); });
+loadDefaults();
+</script>
+</body></html>

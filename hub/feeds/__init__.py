@@ -7,6 +7,10 @@ A plugin is one file in this folder with:
   history(symbol, tf, limit, to_ms) -> bars oldest first; to_ms = newest open time wanted (scroll-back), or None
   selftest()                      -> (ok, message)
   stream(ws, symbol, tf)          optional; default = poll history every 2 s (feeds.base.poll_stream)
+  api(action, payload)            optional; a source's own routes under /api/feeds/<id>/<action> (e.g. the
+                                  Angel One login window: status, save, login, logout, clear). Set
+                                  MANIFEST["login"] so the hub shows a Log in button for it.
+  start()                         optional; called once at hub start while the source is on (background jobs)
 Tickers must be unique across all sources, so each plugin prefixes its own (OKX_, CB_, KRK_ ...).
 Which plugins are on lives in <data>/sources.json; data folder = env TRADEX_DATA or <repo>/data.
 """
@@ -54,6 +58,24 @@ def enabled():
 def get(pid):
     return enabled().get(pid)
 
+def module(pid):
+    """A loaded plugin even while it is switched off (so it can be set up / logged in first)."""
+    _load_all()
+    return _plugins.get(pid)
+
+def plugin_api(pid, action, payload=None):
+    """Call an optional plugin api() route (GET/POST /api/feeds/<pid>/<action>)."""
+    mod = module(pid)
+    if not mod or not hasattr(mod, "api"):
+        raise KeyError(pid)
+    return mod.api(action, payload or {})
+
+def refresh_now(pid):
+    """Reload one plugin's symbol list now (after a login, instead of waiting for the hourly loop)."""
+    mod = module(pid)
+    if mod:
+        _refresh(pid, mod)
+
 def manifests():
     cfg = config()
     return [dict(mod.MANIFEST, enabled=cfg[pid], status=_status.get(pid)) for pid, mod in sorted(_plugins.items())]
@@ -67,7 +89,7 @@ def _refresh(pid, mod):
             _syms[pid] = s
         _status[pid] = {"ok": True, "msg": f"{len(s)} charts"}
     except Exception as e:
-        _status[pid] = {"ok": False, "msg": f"symbol list failed: {e.__class__.__name__}"}
+        _status[pid] = {"ok": False, "msg": f"symbol list failed: {str(e)[:160] or e.__class__.__name__}"}
 
 def symbols_loop():
     """Background: refresh every enabled plugin's symbol list each hour (and soon after one is switched on)."""

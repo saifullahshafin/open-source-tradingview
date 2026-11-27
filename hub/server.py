@@ -40,6 +40,13 @@ import feeds  # chart-source plugins (hub/feeds/)
 
 HTTP_PORT = int(os.environ.get("HUB_HTTP_PORT", "8770"))
 WS_PORT = int(os.environ.get("HUB_WS_PORT", "8765"))
+# LAN access is opt-in: set HOST_IP (this PC's LAN address) to listen on all interfaces so phones and
+# other computers on the same network can reach the hub. Empty = localhost only (the safe default).
+HOST_IP = os.environ.get("HOST_IP", "").strip()
+BIND_HOST = "0.0.0.0" if HOST_IP else "127.0.0.1"
+ORIGINS = {f"http://localhost:{HTTP_PORT}", f"http://127.0.0.1:{HTTP_PORT}"}
+if HOST_IP:
+    ORIGINS.add(f"http://{HOST_IP}:{HTTP_PORT}")
 LOCAL_MT5 = os.environ.get("LOCAL_MT5", "0") == "1"
 MT5_TERMINAL_PATH = os.environ.get("MT5_TERMINAL_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
 REMOTE_SSH_HOST = os.environ.get("REMOTE_MT5_SSH_HOST", "").strip()   # an alias from your ~/.ssh/config; empty = off
@@ -1132,6 +1139,27 @@ class LabHandler(SimpleHTTPRequestHandler):
                                "deriv": len(deriv_symbols_cache), "bybit": len(bybit_symbols_cache), "ws_port": WS_PORT}, 200)
         if self.path.startswith("/api/sources"):   # chart-source plugins (hub/feeds/): manifest + on/off + health
             return self._json({"sources": feeds.manifests()}, 200)
+        if self.path.startswith("/api/feeds/"):     # a plugin's own routes, e.g. /api/feeds/angel/status
+            parts = urlparse(self.path).path.split("/")
+            pid, action = (parts[3] if len(parts) > 3 else ""), (parts[4] if len(parts) > 4 else "status")
+            try:
+                return self._json(feeds.plugin_api(pid, action or "status", {}), 200)
+            except KeyError:
+                return self._json({"ok": False, "error": f"no such source: {pid}"}, 404)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"}, 502)
+        if self.path.startswith("/api/backtest/"):   # options backtest jobs (hub/backtest.py, research only)
+            parts = urlparse(self.path).path.split("/")
+            action = parts[3] if len(parts) > 3 and parts[3] else "defaults"
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            try:
+                import backtest
+                return self._json(backtest.api(action, {"id": q.get("id", ""),
+                                                        "result": q.get("result", "") in ("1", "true", "yes")}), 200)
+            except KeyError:
+                return self._json({"ok": False, "error": f"no such backtest route: {action}"}, 404)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"}, 502)
         if PRIV and getattr(PRIV, "handle_get", None) and PRIV.handle_get(self):   # personal routes (private/)
             return
         if self.path.startswith("/api/restart"):
@@ -1241,13 +1269,14 @@ class LabHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        """Only /api/restart (Restart button), /api/layouts/* (saved layouts) and the private extension's routes.
-        Same-origin JSON only, so another web page open in the browser cannot act through this local server."""
-        allowed = ("/api/restart", "/api/layouts/") + (tuple(PRIV.post_prefixes()) if PRIV and hasattr(PRIV, "post_prefixes") else ())
+        """Only /api/restart (Restart button), /api/layouts/* (saved layouts), /api/feeds/* (source logins,
+        this computer only) and the private extension's routes. Same-origin JSON only, so another web page
+        open in the browser cannot act through this local server."""
+        allowed = ("/api/restart", "/api/layouts/", "/api/feeds/", "/api/backtest/") + (tuple(PRIV.post_prefixes()) if PRIV and hasattr(PRIV, "post_prefixes") else ())
         if not self.path.startswith(allowed):
             return self._json({"error": "not found"}, 404)
         origin = self.headers.get("Origin", "")
-        if origin and origin not in (f"http://localhost:{HTTP_PORT}", f"http://127.0.0.1:{HTTP_PORT}"):
+        if origin and origin not in ORIGINS:
             return self._json({"error": "forbidden origin"}, 403)
         if "application/json" not in self.headers.get("Content-Type", ""):
             return self._json({"error": "JSON only"}, 415)
@@ -1258,6 +1287,41 @@ class LabHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/layouts/"):
             code, obj = layouts_store.handle_post(self.path, body)
             return self._json(obj, code)
+        if self.path.startswith("/api/feeds/"):
+            # A plugin route that stores credentials or logs in: only this computer may call it.
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._json({"ok": False, "error": "only this computer can change feed logins"}, 403)
+            from urllib.parse import urlparse
+            parts = urlparse(self.path).path.split("/")
+            pid, action = (parts[3] if len(parts) > 3 else ""), (parts[4] if len(parts) > 4 else "")
+            try:
+                payload = json.loads(body or b"{}")
+            except ValueError:
+                return self._json({"ok": False, "error": "invalid JSON"}, 400)
+            if not isinstance(payload, dict):
+                return self._json({"ok": False, "error": "JSON object expected"}, 400)
+            try:
+                return self._json(feeds.plugin_api(pid, action, payload), 200)
+            except KeyError:
+                return self._json({"ok": False, "error": f"no such source: {pid}"}, 404)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 400)
+        if self.path.startswith("/api/backtest/"):   # start a run (the job runs in a background thread)
+            from urllib.parse import urlparse
+            action = urlparse(self.path).path.split("/")[3]
+            try:
+                payload = json.loads(body or b"{}")
+            except ValueError:
+                return self._json({"ok": False, "error": "invalid JSON"}, 400)
+            if not isinstance(payload, dict):
+                return self._json({"ok": False, "error": "JSON object expected"}, 400)
+            try:
+                import backtest
+                return self._json(backtest.api(action, payload), 200)
+            except KeyError:
+                return self._json({"ok": False, "error": f"no such backtest route: {action}"}, 404)
+            except Exception as e:
+                return self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"}, 400)
         if self.path.startswith("/api/restart"):
             if not restart_state["running"]:
                 restart_state["running"] = True  # set here so a double click cannot start two restarts
@@ -1313,15 +1377,16 @@ class HubHTTPServer(ThreadingHTTPServer):
 
 def run_http():
     h = functools.partial(LabHandler, directory=HERE)
-    HubHTTPServer(("127.0.0.1", HTTP_PORT), h).serve_forever()
+    HubHTTPServer((BIND_HOST, HTTP_PORT), h).serve_forever()
 
 def ports_free_or_exit():
     """Before anything starts: both ports must be free. TradeX already running -> say where; another program -> say how to change."""
     import socket
     for port, what in ((HTTP_PORT, "HUB_HTTP_PORT"), (WS_PORT, "HUB_WS_PORT")):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # a just-stopped hub leaves TIME_WAIT sockets
         try:
-            s.bind(("127.0.0.1", port))
+            s.bind((BIND_HOST, port))
         except OSError:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/api/restart", timeout=3)
@@ -1347,11 +1412,17 @@ async def main():
     threading.Thread(target=bybit_symbols_loop, daemon=True).start()
     threading.Thread(target=binance_loop, daemon=True).start()
     threading.Thread(target=feeds.symbols_loop, daemon=True).start()   # chart-source plugins
+    for _pid, _mod in feeds.enabled().items():                         # plugin background jobs (e.g. daily login)
+        if hasattr(_mod, "start"):
+            try:
+                _mod.start()
+            except Exception as _e:
+                print(f"feeds: {_pid} start failed: {_e}", flush=True)
     feedlog.start(FEED_HEALTH, ARM_PORT if REMOTE_ON else None, feed_status)
     if PRIV and hasattr(PRIV, "start"):
         PRIV.start(globals())
     print(f"TradeX: open http://localhost:{HTTP_PORT}/  (data on ws://localhost:{WS_PORT})", flush=True)
-    async with websockets.serve(handler, "127.0.0.1", WS_PORT, max_size=None):
+    async with websockets.serve(handler, BIND_HOST, WS_PORT, max_size=None):
         await asyncio.Future()
 
 if __name__ == "__main__":

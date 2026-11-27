@@ -119,6 +119,31 @@ and set `LOCAL_MT5=1` in `.env`. A "Local MT5" feed appears.
 2. On your PC: add the server to `~/.ssh/config` (key login) and set `REMOTE_MT5_SSH_HOST=<alias>` in `.env`.
 3. Restart the hub. It opens the SSH tunnel itself and reconnects if the link drops. A "Remote MT5" feed appears.
 
+## Indian markets: Angel One (optional)
+
+Indian equities and indices come from your own Angel One SmartAPI account (read-only candles; TradeX never places
+orders). Create an app at <https://smartapi.angelbroking.com> (My Profile > API).
+
+**Log in from the hub (no .env editing):** open **Feeds** in the right rail > **Angel One login**, paste the API key,
+client id and PIN once, then enter today's 6-digit TOTP from the authenticator app. The key/PIN are saved on this PC
+in `data/angel_auth.json` (readable only by your user), so every later day asks just for the code. The session lasts
+until midnight IST; if you also save the base32 TOTP secret (behind the "Angel One SmartAPI TOTP" QR) the session
+renews by itself every day and the window shows it is automatic.
+
+`.env` works too, and is also what the setup scripts and the CLI use:
+
+```
+ANGEL_API_KEY=...
+ANGEL_CLIENT_ID=...
+ANGEL_PIN=...
+ANGEL_TOTP_SECRET=...   # optional: automatic daily login
+```
+
+A value saved from the hub wins over `.env`; **Forget** in the window removes it. The session is cached in `data/`
+until midnight IST. `python hub/feeds/angel.py --status` shows the state, `--login 123456` logs in from a terminal,
+and `--test ANG_RELIANCE --tf M5` fetches a few candles. Charts appear as `ANG_...` tickers (NIFTY 50, BANK NIFTY,
+SENSEX and NSE equities).
+
 ## Let your AI agent set it up
 
 [AGENTS.md](AGENTS.md) is written for coding agents (Claude Code, Codex, Cursor and similar). It gives the exact

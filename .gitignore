@@ -40,3 +40,7 @@ Thumbs.db
 # web beta build output (scripts/build_web.py)
 /web_dist/
 /.vercel/
+backups/
+
+# local session notes (handoff for a new agent session)
+chat.md

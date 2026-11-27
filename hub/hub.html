@@ -149,6 +149,27 @@
     .sy-logo { grid-row:1 / 3 } .sy-sym { grid-column:2 } .sy-type { grid-column:3; grid-row:1 } .sy-desc { grid-column:2; grid-row:2 } .sy-tags { grid-column:3; grid-row:2 }
     .sy-foot span:first-child { display:none } .sy-tabs, .sy-bar { padding-left:14px; padding-right:14px } .dlg.sy .dlg-s { padding-left:14px; padding-right:14px }
   }
+  /* Feed login window (Angel One TOTP) */
+  #feedDlg { position:fixed; inset:0; z-index:50; background:#0008; display:flex; align-items:center; justify-content:center }
+  #feedDlg[hidden] { display:none }
+  .dlg.fdg { width:min(440px, 94vw); height:auto; max-height:92vh; }
+  .fd-b { padding:2px 20px 18px; overflow:auto }
+  .fd-state { border:1px solid var(--line); border-radius:6px; padding:9px 11px; margin-bottom:14px; font-size:12px; line-height:1.5; color:var(--dim); background:var(--bg) }
+  .fd-state b { color:var(--text); font-weight:600 } .fd-state.bad { border-color:var(--bad); color:var(--bad) }
+  .fd-b label { display:block; font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); margin:11px 0 5px }
+  .fd-b input { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:9px 10px; font:inherit; font-size:13px }
+  .fd-b input:focus { outline:none; border-color:var(--accent) }
+  #fdCode { font:700 20px/1 var(--mono); letter-spacing:.28em; text-align:center; padding:12px 10px }
+  .fd-timer { display:flex; align-items:center; gap:8px; margin-top:6px; color:var(--dim); font:11px var(--mono) }
+  .fd-timer .bar { flex:1; height:3px; background:var(--grid); border-radius:2px; overflow:hidden }
+  .fd-timer .bar i { display:block; height:100%; background:var(--accent); width:100%; transition:width .9s linear }
+  .fd-acts { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap }
+  .fd-acts .btn { flex:1; min-width:96px; padding:8px 10px }
+  .fd-msg { margin-top:10px; font-size:12px; line-height:1.5; color:var(--dim); min-height:16px }
+  .fd-msg.ok { color:var(--ok) } .fd-msg.bad { color:var(--bad) }
+  .fd-note { margin-top:12px; color:var(--faint); font-size:11px; line-height:1.5 }
+  .linkbtn { background:none; border:0; color:var(--accent); cursor:pointer; font:inherit; font-size:12px; padding:0 }
+  .linkbtn:hover { text-decoration:underline }
   /* Pine Editor (dock panel) */
   #dock.wide { width:min(560px, 48vw); display:flex; flex-direction:column; overflow:hidden }
   .pe-bar { display:flex; gap:6px; padding:8px 10px; border-bottom:1px solid var(--line); flex-wrap:wrap }
@@ -184,6 +205,33 @@
   <button data-panel="settings" title="Settings: theme, colours, font" style="margin-top:auto;margin-bottom:6px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
 </nav>
 <footer id="status"><span id="lights"></span><button id="restart" title="Restart this chart. For Remote MT5: reconnects the SSH link and, if configured, restarts the bridge. Drawings and indicators come back by themselves.">Restart chart</button><span id="restartMsg"></span><span id="hud"></span><span id="clock"></span></footer>
+</div>
+<div id="feedDlg" hidden>
+  <div class="dlg fdg">
+    <div class="dlg-h"><span id="fdTitle">Angel One login</span><button class="dlg-x" id="fdX" title="Close">&times;</button></div>
+    <div class="fd-b">
+      <div class="fd-state" id="fdState"></div>
+      <label for="fdKey">API key</label>
+      <input id="fdKey" autocomplete="off" spellcheck="false" placeholder="SmartAPI app key">
+      <label for="fdClient">Client ID</label>
+      <input id="fdClient" autocomplete="off" spellcheck="false" placeholder="e.g. S1234567">
+      <label for="fdPin">PIN</label>
+      <input id="fdPin" type="password" inputmode="numeric" autocomplete="off" placeholder="4-digit trading PIN">
+      <label for="fdCode">TOTP for today</label>
+      <input id="fdCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+      <div class="fd-timer"><span id="fdTimer">30s</span><div class="bar"><i id="fdBar"></i></div></div>
+      <label for="fdSecret">TOTP secret (optional: auto login every day)</label>
+      <input id="fdSecret" type="password" autocomplete="off" spellcheck="false" placeholder="base32 secret behind the TOTP QR">
+      <div class="fd-acts">
+        <button class="btn primary" id="fdLogin">Log in</button>
+        <button class="btn" id="fdSave">Save</button>
+        <button class="btn" id="fdOut">Log out</button>
+        <button class="btn" id="fdForget" title="Remove the saved API key, client ID and PIN from this PC (the .env values, if any, are used again)">Forget</button>
+      </div>
+      <div class="fd-msg" id="fdMsg"></div>
+      <div class="fd-note">Saved on this PC in <code>data/angel_auth.json</code> (readable only by you) so each trading day needs just the 6-digit code. A saved value wins over <code>.env</code>; <b>Forget</b> removes it. Nothing here places orders.</div>
+    </div>
+  </div>
 </div>
 <script src="pine_convert.js"></script><script src="pine_style.js"></script><script src="ind_core.js"></script><script src="pine_library.js"></script><script src="ind_dialog.js"></script><script src="pine_editor.js"></script>
 <script>
@@ -388,7 +436,113 @@ function renderFeeds() {
   DATA.brokers.forEach((b) => { const s = status[b.id] || {}, r = document.createElement("div"); r.className = "row";
     r.innerHTML = `<b><span class="dot ${s.ok ? "ok" : "bad"}"></span></b><span></span>`;
     r.children[0].append(b.name); r.children[1].textContent = s.msg || "-"; d.appendChild(r); });
+  renderFeedLogins(d);
 }
+
+// ---- Feed logins (a plugin's own routes under /api/feeds/<id>/<action>; Angel One's daily TOTP) ----
+let SOURCES = [];
+async function renderFeedLogins(d) {
+  let srcs = SOURCES;
+  if (!srcs.length) { try { srcs = SOURCES = (await (await fetch("/api/sources")).json()).sources || []; } catch (_) { return; } }
+  const loginSources = srcs.filter((s) => s.login && s.enabled);
+  for (const s of loginSources) {
+    const st = await feedStatus(s.id), sec = document.createElement("div");
+    sec.className = "set"; sec.innerHTML = `<h4>${s.name} login</h4>`;
+    const line = document.createElement("div"), msg = document.createElement("div"), btn = document.createElement("button");
+    line.style.cssText = "display:flex;gap:8px;align-items:center;font-size:12px";
+    line.innerHTML = `<span class="dot ${st.logged_in ? "ok" : st.configured ? "bad" : ""}"></span>`;
+    msg.style.cssText = "flex:1;color:var(--dim);line-height:1.45";
+    msg.textContent = st.logged_in ? `Logged in for ${st.login_date}` : st.configured ? "Today's TOTP is needed" : "API key and PIN needed once";
+    btn.className = "btn" + (st.logged_in ? "" : " primary"); btn.textContent = st.logged_in ? "Manage" : "Log in";
+    btn.onclick = () => openFeedLogin(s);
+    line.append(msg, btn);
+    const hint = document.createElement("div"); hint.className = "note"; hint.style.padding = "6px 0 0";
+    hint.textContent = st.totp_secret ? "Renews by itself at midnight IST." : "Log in once each trading day with the code from your authenticator app.";
+    sec.append(line, hint); d.appendChild(sec);
+  }
+}
+
+async function feedStatus(id) {
+  try { return await (await fetch(`/api/feeds/${encodeURIComponent(id)}/status`)).json(); }
+  catch (_) { return { ok: false, error: "Chart server not answering" }; }
+}
+async function feedPost(id, action, body) {
+  const r = await fetch(`/api/feeds/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  let j = {}; try { j = await r.json(); } catch (_) {}
+  if (!r.ok && !j.error) j.error = `Request failed (HTTP ${r.status})`;
+  return j;
+}
+
+let FD = { src: null, st: {}, timer: null };
+function fdTick() {
+  const left = 30 - (Math.floor(Date.now() / 1000) % 30);
+  $("fdTimer").textContent = `code window ${left}s`;
+  $("fdBar").style.width = `${(left / 30) * 100}%`;
+}
+function fdSay(text, kind) { const m = $("fdMsg"); m.textContent = text || ""; m.className = "fd-msg" + (kind ? " " + kind : ""); }
+function fdPaint(st) {
+  FD.st = st || {};
+  const s = FD.st;
+  $("fdKey").placeholder = s.api_key ? `saved: ${s.api_key} (blank keeps it)` : "SmartAPI app key";
+  $("fdClient").placeholder = s.client_id ? `saved: ${s.client_id} (blank keeps it)` : "e.g. S1234567";
+  $("fdPin").placeholder = s.pin_set ? "saved PIN (blank keeps it)" : "4-digit trading PIN";
+  $("fdSecret").placeholder = s.totp_secret ? "saved (automatic daily login is on)" : "base32 secret behind the TOTP QR";
+  const box = $("fdState");
+  box.className = "fd-state" + (s.logged_in ? "" : s.configured ? " bad" : "");
+  if (s.error) box.textContent = s.error;
+  else if (s.logged_in) box.innerHTML = `<b>Logged in</b> for ${s.login_date}. Session ends at midnight IST` + (s.totp_secret ? ", then renews by itself." : "; log in again tomorrow with a fresh code.");
+  else if (s.configured) box.innerHTML = "<b>Not logged in.</b> Enter today's 6-digit code from your authenticator app.";
+  else box.innerHTML = "<b>First time.</b> Paste your SmartAPI API key, client ID and PIN once; only the daily code is asked after that.";
+}
+async function openFeedLogin(src) {
+  FD.src = src; $("fdTitle").textContent = `${src.name} login`;
+  ["fdKey", "fdClient", "fdPin", "fdCode", "fdSecret"].forEach((id) => ($(id).value = ""));
+  fdSay("", ""); $("feedDlg").hidden = false;
+  clearInterval(FD.timer); FD.timer = setInterval(() => { if ($("feedDlg").hidden) return clearInterval(FD.timer); fdTick(); }, 1000); fdTick();
+  fdPaint(await feedStatus(src.id)); $("fdCode").focus();
+}
+function closeFeedLogin() { clearInterval(FD.timer); $("feedDlg").hidden = true; FD.src = null; }
+
+async function fdAction(action) {
+  if (!FD.src) return;
+  const body = {};
+  const put = (k, id) => { const v = $(id).value.trim(); if (v) body[k] = v; };
+  put("api_key", "fdKey"); put("client_id", "fdClient"); put("pin", "fdPin"); put("totp_secret", "fdSecret");
+  if (action === "login") {
+    body.totp = $("fdCode").value.trim();
+    if (body.totp && !/^\d{6}$/.test(body.totp)) return fdSay("The TOTP is the 6-digit code from your authenticator app.", "bad");
+    if (!body.totp && !FD.st.totp_secret) return fdSay("Enter today's 6-digit TOTP code.", "bad");
+  }
+  const btns = [$("fdLogin"), $("fdSave"), $("fdOut"), $("fdForget")];
+  btns.forEach((b) => (b.disabled = true)); fdSay(action === "login" ? "Logging in ..." : "Working ...", "");
+  let r;
+  try { r = await feedPost(FD.src.id, action, body); }
+  catch (e) { r = { ok: false, error: "Chart server not answering: run start.bat (Windows) or start.sh" }; }
+  btns.forEach((b) => (b.disabled = false));
+  if (r.ok) {
+    ["fdKey", "fdClient", "fdPin", "fdCode", "fdSecret"].forEach((id) => ($(id).value = ""));
+    fdSay(r.msg || "Done.", "ok");
+    fdPaint(r); pollStatus();
+    if (action === "login") reloadInstruments();
+  } else { fdSay(r.error || "Failed.", "bad"); if (r.configured !== undefined) fdPaint(r); }
+}
+// After a login the ANG_ list can appear for the first time: refresh the instrument map without a page reload.
+async function reloadInstruments() {
+  try {
+    const d = await (await fetch("/api/instruments")).json();
+    DATA.brokers = d.brokers; DATA.instruments = d.instruments; BY_TICKER.clear();
+    DATA.instruments.forEach((i) => Object.entries(i.brokers).forEach(([b, opts]) => opts.forEach((o) => BY_TICKER.set(o.ticker, { key: i.key, broker: b }))));
+    paint();
+  } catch (_) {}
+}
+$("fdX").onclick = closeFeedLogin;
+$("feedDlg").onclick = (e) => { if (e.target.id === "feedDlg") closeFeedLogin(); };
+$("fdLogin").onclick = () => fdAction("login");
+$("fdSave").onclick = () => fdAction("save");
+$("fdOut").onclick = () => fdAction("logout");
+$("fdForget").onclick = () => fdAction("clear");
+$("fdCode").onkeydown = (e) => { if (e.key === "Enter") fdAction("login"); };
+$("fdPin").onkeydown = (e) => { if (e.key === "Enter") fdAction("login"); };
 function openPanelByName(name) {
   openPanel = name;
   document.querySelectorAll("#rail button").forEach((x) => x.classList.toggle("on", x.dataset.panel === openPanel));
@@ -399,7 +553,7 @@ document.querySelectorAll("#rail button").forEach((b) => (b.onclick = () => {
   openPanelByName(openPanel === b.dataset.panel ? null : b.dataset.panel);
 }));
 // "/" opens the Indicators dialog (TradingView's shortcut) when not typing.
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("indDlg") && !$("indDlg").hidden) { closeIndDlg(); return; } if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); openIndDlg(); } });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("feedDlg") && !$("feedDlg").hidden) { closeFeedLogin(); return; } if (e.key === "Escape" && $("indDlg") && !$("indDlg").hidden) { closeIndDlg(); return; } if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); openIndDlg(); } });
 
 // Layout (Vela only): the engine rebuilds its grid on the current market.
 $("layout").onchange = (e) => { const w = $("frame").contentWindow; if (w) w.postMessage({ cmd: "layout", layout: e.target.value }, location.origin); };
