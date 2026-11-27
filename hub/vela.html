@@ -235,13 +235,8 @@ function build(layout) {
     if (symbol) window.LabDefaultSymbol = String(symbol).replace(/^lab:/, "");
     if (timeframe) window.LabDefaultTF = LabTF.fromAny(timeframe);
   });
-  // An indicator removed from Vela's legend: the hub forgets it too (else it comes back on reload).
-  // Settings changed in Vela's dialog: the hub stores the values so they survive a reload.
-  try { ws.chart.on("indicator:inputs", (ev) => { const h = ws.chart.indicators().find((x) => x.id === (ev && ev.id)); if (LabEmbedded && h) window.parent.postMessage({ evt: "ind:inputs", id: h.id, inputs: h.inputValues(), props: h.propValues ? h.propValues() : {} }, location.origin); }); } catch (_) {}
-  // Last run per script (plot values): proof that an indicator really produced numbers (click test, status).
+  // Last run / legend remove / gear inputs: hooked on EVERY cell inside hookCells (multi-pane layouts).
   window.lastRuns = {};
-  try { ws.chart.on("script:run", (ev) => { if (ev && ev.id) window.lastRuns[ev.id] = { plots: ev.plots || {}, bar: ev.bar, warnings: (ev.warnings || []).length, at: Date.now() }; }); } catch (_) {}
-  try { ws.chart.on("indicator:removed", (ev) => { if (LabEmbedded && ev && ev.id) window.parent.postMessage({ evt: "ind:removed", id: ev.id }, location.origin); }); } catch (_) {}
   ws.chart.on("market:changed", ({ symbol, timeframe }) => LabNotify(String(symbol || "").replace(/^lab:/, ""), LabTF.fromAny(timeframe || "1")));
   // TradeX layouts (2026-11-23): drawings belong to a SYMBOL (TradingView rule), every change wakes the hub's autosave.
   hookCells();
@@ -255,6 +250,19 @@ const cellSym = new WeakMap(), hookedCharts = new WeakSet();
 const EMPTY_DRAWINGS = { version: 1, drawings: [] };
 const bareSym = (s) => String(s || "").replace(/^lab:/, "");
 function cellsList() { try { return ws.cells ? ws.cells() : [ws.active]; } catch (_) { return [ws.active]; } }
+function cellMeta(chart) {
+  const list = cellsList(), i = list.findIndex((c) => c && c.chart === chart);
+  return { index: i < 0 ? 0 : i, id: i >= 0 && list[i] ? list[i].id : (ws.activeCellId || "") };
+}
+function chartForCell(cell, cellId) {
+  // Prefer index (stable after layout restore); then id. Return null on miss so callers do NOT
+  // silently dump every indicator onto the active cell (the multi-pane pile-up bug).
+  const list = cellsList();
+  const idx = cell == null || cell === "" ? NaN : Number(cell);
+  if (Number.isInteger(idx) && idx >= 0 && list[idx] && list[idx].chart) return list[idx].chart;
+  if (cellId) { const hit = list.find((c) => c && c.id === cellId); if (hit && hit.chart) return hit.chart; }
+  return null;
+}
 function cellSymbol(chart) {
   try { const i = cellsList().findIndex((c) => c && c.chart === chart); const cs = ws.getState().charts[i]; if (cs && cs.symbol) return bareSym(cs.symbol); } catch (_) {}
   return LabDefaultSymbol;
@@ -272,6 +280,10 @@ function hookCells() {
     try { c.chart.on("market:changed", ({ symbol }) => swapDrawings(c.chart, bareSym(symbol))); } catch (_) {}
     // A right mouse-down clears the selection for a moment before the menu opens: keep the last line for 2 s.
     try { c.chart.on("drawing:selected", (ev) => { if (selDrawing) lastSel = { ...selDrawing, at: Date.now() }; selDrawing = ev && ev.id ? { chart: c.chart, id: ev.id } : null; alertChip(); }); } catch (_) {}
+    // Multi-pane: legend remove / gear inputs / script runs must reach the hub from every cell, not only the active one.
+    try { c.chart.on("indicator:removed", (ev) => { if (LabEmbedded && ev && ev.id) window.parent.postMessage({ evt: "ind:removed", id: ev.id }, location.origin); }); } catch (_) {}
+    try { c.chart.on("indicator:inputs", (ev) => { try { const h = c.chart.indicators().find((x) => x.id === (ev && ev.id)); if (LabEmbedded && h) window.parent.postMessage({ evt: "ind:inputs", id: h.id, inputs: h.inputValues(), props: h.propValues ? h.propValues() : {} }, location.origin); } catch (_) {} }); } catch (_) {}
+    try { c.chart.on("script:run", (ev) => { if (ev && ev.id) window.lastRuns[ev.id] = { plots: ev.plots || {}, bar: ev.bar, warnings: (ev.warnings || []).length, at: Date.now() }; }); } catch (_) {}
   });
 }
 // ---- Alerts from the chart (2026-11-23): right-click a price / a drawing, or the chip on a selected line ----
@@ -357,33 +369,52 @@ window.labChart = {
   // Layout in place (cells keep their state); new cells get the theme colours.
   setLayout: (layout) => { document.getElementById("layout").value = layout || ""; if (ws.setLayout) { ws.setLayout(layout || "1"); setTimeout(applyTheme, 1500); } else build(layout || ""); },
   applyTheme,
-  // Add a Pine Script indicator to the active chart. Resolves {ok, id, error}.
+  // Add / remove Pine or native on a specific multi-pane cell (cell index / cellId); default = active cell.
+  activeCell: () => { const m = cellMeta(ws.chart); return { ok: true, index: m.index, id: m.id, count: cellsList().length }; },
+  cellsCount: () => ({ ok: true, count: cellsList().length }),
   removePine: (id) => {
-    const h = (window.pineHandles || {})[id] || ws.chart.indicators().find((x) => x.id === id);
-    if (h) { h.remove(); if (window.pineHandles) delete window.pineHandles[id]; return true; } return false;
+    const h = (window.pineHandles || {})[id];
+    if (h) { try { h.remove(); } catch (_) {} if (window.pineHandles) delete window.pineHandles[id]; return true; }
+    for (const c of cellsList()) {
+      try { const x = c.chart.indicators().find((y) => y.id === id); if (x) { x.remove(); return true; } } catch (_) {}
+    }
+    return false;
   },
   // Vela's own (native, core-computed) indicators: catalog, add.
   natives: async () => (await ws.chart.availableNativeIndicators()).map((n) => ({ type: n.type, title: n.title, supported: n.supported, present: n.present, multi: !!n.multiInstance, beta: !!n.beta })),
-  addNative: (type, inputs) => {
+  addNative: (type, inputs, cell, cellId) => {
     try {
-      const h = ws.chart.addNativeIndicator(type, inputs ? { inputs } : undefined);
+      const want = cell != null || cellId, chart = chartForCell(cell, cellId) || (!want ? ws.chart : null);
+      if (!chart) return { ok: false, error: "chart cell not ready", retry: true };
+      const meta = cellMeta(chart);
+      const h = chart.addNativeIndicator(type, inputs ? { inputs } : undefined);
       if (!h || !h.id) return { ok: false, error: "not available on this chart" };
-      (window.pineHandles = window.pineHandles || {})[h.id] = h; return { ok: true, id: h.id, title: h.title };
+      (window.pineHandles = window.pineHandles || {})[h.id] = h;
+      return { ok: true, id: h.id, title: h.title, cell: meta.index, cellId: meta.id };
     } catch (e) { return { ok: false, error: String(e.message || e) }; }
   },
   // Everything on the chart now (script + native), for the dialog and for the click tests.
   lastRun: (id) => (window.lastRuns || {})[id] || null,
-  onChart: () => ws.chart.indicators().map((h) => ({ id: h.id, title: h.title, native: h.nativeType || null, visible: h.visible })),
-  addPine: async (source, inputs, props) => {
+  onChart: () => {
+    const out = [];
+    cellsList().forEach((c, i) => {
+      try { c.chart.indicators().forEach((h) => out.push({ id: h.id, title: h.title, native: h.nativeType || null, visible: h.visible, cell: i, cellId: c.id })); } catch (_) {}
+    });
+    return out;
+  },
+  addPine: async (source, inputs, props, cell, cellId) => {
     try {
+      const want = cell != null || cellId, chart = chartForCell(cell, cellId) || (!want ? ws.chart : null);
+      if (!chart) return { ok: false, error: "chart cell not ready", retry: true };
+      const meta = cellMeta(chart);
       const opt = {}; if (inputs && Object.keys(inputs).length) opt.inputs = inputs; if (props && Object.keys(props).length) opt.props = props;
-      const h = ws.chart.addIndicator(source, opt);
+      const h = chart.addIndicator(source, opt);
       (window.pineHandles = window.pineHandles || {})[h.id] = h;
       const res = await new Promise((done) => {
-        const t = setTimeout(() => done({ ok: true, id: h.id, pending: true, note: "no result within 15 s (no chart data yet?)" }), 15000);
-        h.on("ready", () => { clearTimeout(t); done({ ok: true, id: h.id, title: h.title });
+        const t = setTimeout(() => done({ ok: true, id: h.id, pending: true, note: "no result within 15 s (no chart data yet?)", cell: meta.index, cellId: meta.id }), 15000);
+        h.on("ready", () => { clearTimeout(t); done({ ok: true, id: h.id, title: h.title, cell: meta.index, cellId: meta.id });
           if (LabEmbedded) window.parent.postMessage({ evt: "ind:ready", id: h.id }, location.origin); });  // also after a late start
-        h.on("error", ({ error }) => { clearTimeout(t); done({ ok: false, id: h.id, error: String(error && error.message || error) }); });
+        h.on("error", ({ error }) => { clearTimeout(t); done({ ok: false, id: h.id, error: String(error && error.message || error), cell: meta.index, cellId: meta.id }); });
       });
       return res;
     } catch (e) { return { ok: false, error: String(e.message || e) }; }

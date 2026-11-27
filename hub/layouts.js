@@ -53,8 +53,17 @@
     try {
       if (st.engine !== "vela" || !curId) return;   // finally{} still marks ready
       const full = !bootApplied; bootApplied = true;
-      let chart = lastChartDoc;
-      if (full || !chart) { const d = await api("?kind=layouts&id=" + encodeURIComponent(curId)); curName = d.name; chart = d.doc && d.doc.chart; if (full && d.doc && d.doc.grid) $("layout").value = d.doc.grid; }
+      let chart = lastChartDoc, doc;
+      if (full || !chart) {
+        const d = await api("?kind=layouts&id=" + encodeURIComponent(curId));
+        curName = d.name; doc = d.doc || {}; chart = doc.chart;
+        if (full && doc.grid) $("layout").value = doc.grid;
+        // Full boot after Save + refresh: restore per-cell indicator list from the layout (includes `cell` / `cellId`).
+        if (full && Array.isArray(doc.inds)) {
+          lsSet("chartHubIndicators", JSON.stringify(doc.inds));
+          try { INDS.splice(0, INDS.length, ...doc.inds); } catch (_) {}
+        }
+      }
       if (!chart) return;
       const r = await ask("doc:apply", { doc: full ? chart : { drawBook: chart.drawBook } }, 8000);
       if (!r.ok) console.warn("layout apply", r.error);

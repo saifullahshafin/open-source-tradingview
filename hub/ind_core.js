@@ -51,10 +51,21 @@ async function pineAdd(ind, auto) {
     return;
   }
   ind.wait = false;
+  // Multi-pane: remember which cell owns this indicator (active cell when first added; restored cell on reapply).
+  if (ind.cell == null && !ind.cellId) {
+    const a = await ask("cell:active", {}, 2000);
+    if (a && a.ok) { ind.cell = a.index | 0; if (a.id) ind.cellId = a.id; }
+  }
   busy[ind.key] = true; indChanged();
-  if (ind.kind === "native") { const r = await ask("native:add", { type: ind.type, inputs: ind.inputs }); onPineResult({ key: ind.key, ...r }); return; }
-  const w = frameWin(); if (!w) return;
-  w.postMessage({ cmd: "pine:add", key: ind.key, source: prepared(ind), inputs: ind.inputs, props: ind.props }, location.origin);
+  let r = { ok: false, error: "chart did not answer" };
+  for (let attempt = 0; attempt < 25; attempt++) {
+    r = ind.kind === "native"
+      ? await ask("native:add", { type: ind.type, inputs: ind.inputs, cell: ind.cell, cellId: ind.cellId })
+      : await ask("pine:add", { key: ind.key, source: prepared(ind), inputs: ind.inputs, props: ind.props, cell: ind.cell, cellId: ind.cellId }, 20000);
+    if (r && r.retry) { await new Promise((x) => setTimeout(x, 80)); continue; }
+    break;
+  }
+  onPineResult({ key: ind.key, ...r });
 }
 function pineRemove(ind) {
   const id = liveIds[ind.key];
@@ -63,7 +74,12 @@ function pineRemove(ind) {
 }
 function onPineResult(m) {
   const ind = INDS.find((x) => x.key === m.key); delete busy[m.key]; if (!ind) return;
-  if (m.ok) { liveIds[ind.key] = m.id; ind.err = null; ind.pending = !!m.pending; } else { ind.err = m.error || "failed"; ind.on = false; }
+  if (m.ok) {
+    liveIds[ind.key] = m.id; ind.err = null; ind.pending = !!m.pending;
+    // Do not overwrite a known cell with a fallback; only fill missing fields.
+    if (ind.cell == null && m.cell != null) ind.cell = m.cell;
+    if (!ind.cellId && m.cellId) ind.cellId = m.cellId;
+  } else { ind.err = m.error || "failed"; ind.on = false; }
   saveInds(); indChanged();
   if (window.onEditorResult) onEditorResult(ind, m);
 }
@@ -80,7 +96,19 @@ function onInputs(m) {
   const key = Object.keys(liveIds).find((k) => liveIds[k] === m.id), ind = key && INDS.find((x) => x.key === key); if (!ind) return;
   ind.inputs = m.inputs; ind.props = m.props; saveInds();
 }
-function reapplyAll() { liveIds = {}; INDS.filter((x) => x.on).forEach((x) => pineAdd(x, true)); }
+async function reapplyAll() {
+  liveIds = {};
+  const ons = INDS.filter((x) => x.on);
+  // Wait until multi-pane cells exist, otherwise every indicator falls onto the only ready cell.
+  const need = ons.reduce((n, x) => Math.max(n, (Number.isInteger(+x.cell) ? (+x.cell + 1) : 1)), 1);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 4000) {
+    const r = await ask("cells:count", {}, 800);
+    if (r && r.ok && (r.count || 0) >= need) break;
+    await new Promise((x) => setTimeout(x, 50));
+  }
+  for (const x of ons) await pineAdd(x, true);
+}
 function removeInd(ind) { pineRemove(ind); INDS = INDS.filter((y) => y !== ind); saveInds(); indChanged(); }
 function toggleInd(ind, on) { ind.on = on; ind.err = null; if (on) pineAdd(ind); else pineRemove(ind); saveInds(); indChanged(); }
 // One hook every view listens to (dialog list, Pine editor status).
