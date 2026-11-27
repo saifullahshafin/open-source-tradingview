@@ -214,9 +214,9 @@ function build(layout) {
   ws = new VelaLab.VelaWorkspace(host, {
     // "1" (not false) so the layout can change in place later; top-level symbol/timeframe are every cell's default.
     layout: layout || "1", symbol: "lab:" + LabDefaultSymbol, timeframe: VELA_TF[LabDefaultTF], live: true,
-    // History depth. Vela's default is 500 candles and it does NOT load more when you scroll left, so 1m-15m charts
-    // only reached back a few days. More: chart settings > Advanced > Bars to fetch, or the 3M/6M/1Y buttons (2026-11-13).
-    bars: 10000,
+    // Initial history depth (same 1000 as Lightweight / KLine). Scroll-left uses Vela loadRange → getBars for more;
+    // Chart settings > Advanced > Bars to fetch still raises the first request if you want a deeper open (2026-11-27).
+    bars: 1000,
     theme: velaTheme(), upColor: HubTheme.up, downColor: HubTheme.down,
     providers: { lab: () => provider }, persist: false,
     // Inside the TradeX wrapper, symbol / timeframe / layout live in the wrapper's bar only (no duplicate controls).

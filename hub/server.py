@@ -34,12 +34,40 @@ def load_env(path):
 
 load_env(os.path.join(HERE, "..", ".env"))
 load_env(os.path.join(HERE, ".env"))
+
+def apply_proxy():
+    """Optional outbound proxy for exchange REST/WebSocket (HUB_PROXY or HTTP(S)_PROXY).
+
+    Local addresses stay direct so the hub, MT5 bridge and SSH tunnel never loop through the proxy.
+    urllib and websockets both read these env vars (websockets.connect proxy=True by default).
+    HUB_PROXY is cleared after mapping so getproxies() does not invent a fake "hub" scheme.
+    """
+    hub = (os.environ.get("HUB_PROXY") or os.environ.get("HUB_OUTBOUND_PROXY") or "").strip()
+    if hub:
+        if "://" not in hub:
+            hub = "http://" + hub
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ.setdefault(k, hub)
+        # Avoid getproxies() inventing a fake "hub" scheme from HUB_PROXY.
+        os.environ.pop("HUB_PROXY", None)
+    no = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    parts = [p.strip() for p in no.split(",") if p.strip()]
+    for host in ("127.0.0.1", "localhost", "::1"):
+        if host not in parts:
+            parts.append(host)
+    joined = ",".join(parts)
+    os.environ["NO_PROXY"] = joined
+    os.environ["no_proxy"] = joined
+
+apply_proxy()
 import layouts_store
 import logbus, feedlog
 import feeds  # chart-source plugins (hub/feeds/)
 
 HTTP_PORT = int(os.environ.get("HUB_HTTP_PORT", "8770"))
 WS_PORT = int(os.environ.get("HUB_WS_PORT", "8765"))
+OUTBOUND_PROXY = (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+                  or os.environ.get("https_proxy") or os.environ.get("http_proxy") or "").strip()
 LOCAL_MT5 = os.environ.get("LOCAL_MT5", "0") == "1"
 MT5_TERMINAL_PATH = os.environ.get("MT5_TERMINAL_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
 REMOTE_SSH_HOST = os.environ.get("REMOTE_MT5_SSH_HOST", "").strip()   # an alias from your ~/.ssh/config; empty = off
@@ -1350,6 +1378,8 @@ async def main():
     feedlog.start(FEED_HEALTH, ARM_PORT if REMOTE_ON else None, feed_status)
     if PRIV and hasattr(PRIV, "start"):
         PRIV.start(globals())
+    if OUTBOUND_PROXY:
+        print(f"Outbound proxy: {OUTBOUND_PROXY}", flush=True)
     print(f"TradeX: open http://localhost:{HTTP_PORT}/  (data on ws://localhost:{WS_PORT})", flush=True)
     async with websockets.serve(handler, "127.0.0.1", WS_PORT, max_size=None):
         await asyncio.Future()
