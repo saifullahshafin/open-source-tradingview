@@ -38,17 +38,257 @@ window.LabFeed = (() => {
   const stats = { updates: 0, delays: [], exch: [], srcLag: [], lastAt: 0, firstBarAt: 0, errors: [], status: "" };
   window.labStats = stats;
 
+  // Memory cache (parent-shared) + IndexedDB series store. Switch engines / reload: read local first, then
+  // only fetch the tip gap (local last bar → now) and any missing older page. Same-origin IDB is shared by all iframes.
+  // On disk: TXB1 columnar binary (time u32 + ohlcv f64), optionally deflate-compressed — much smaller than object JSON.
+  const CACHE_TTL_LATEST_MS = 15000, CACHE_TTL_HIST_MS = 5 * 60 * 1000, CACHE_MAX = 48;
+  const IDB_NAME = "tradex-bars", IDB_STORE = "series", IDB_VER = 2, SERIES_MAX = 5000, SERIES_KEYS_MAX = 80;
+  const TF_SEC = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 };
+  const TXB_MAGIC = 0x31584254; // 'TXB1' little-endian
+  function barsCache() {
+    try {
+      if (LabEmbedded && window.parent && window.parent !== window) {
+        const p = window.parent;
+        if (!p.__LabBarsCache) p.__LabBarsCache = { map: new Map(), inflight: new Map() };
+        return p.__LabBarsCache;
+      }
+    } catch (_) {}
+    if (!window.__LabBarsCache) window.__LabBarsCache = { map: new Map(), inflight: new Map() };
+    return window.__LabBarsCache;
+  }
+  function cachePut(cache, key, bars) {
+    cache.map.set(key, { at: Date.now(), bars });
+    while (cache.map.size > CACHE_MAX) cache.map.delete(cache.map.keys().next().value);
+  }
+  function copyBars(bars) { return bars.map((b) => ({ ...b })); }
+  function mergeBars(a, b) {
+    const m = new Map();
+    for (const x of a || []) m.set(x.time, x);
+    for (const x of b || []) m.set(x.time, x);
+    return [...m.values()].sort((p, q) => p.time - q.time);
+  }
+  function sliceBars(bars, toMs, limit) {
+    let out = bars;
+    if (toMs) out = out.filter((b) => b.time * 1000 <= toMs);
+    return out.slice(-Math.max(1, limit | 0));
+  }
+  function encodeColumns(bars) {
+    const n = bars.length, raw = new ArrayBuffer(n * 44), view = new DataView(raw);
+    for (let i = 0; i < n; i++) {
+      const b = bars[i], o = i * 44;
+      view.setUint32(o, b.time >>> 0, true);
+      view.setFloat64(o + 4, +b.open, true);
+      view.setFloat64(o + 12, +b.high, true);
+      view.setFloat64(o + 20, +b.low, true);
+      view.setFloat64(o + 28, +b.close, true);
+      view.setFloat64(o + 36, +b.volume || 0, true);
+    }
+    return new Uint8Array(raw);
+  }
+  function decodeColumns(u8, count) {
+    const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), out = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const o = i * 44;
+      out[i] = {
+        time: view.getUint32(o, true),
+        open: view.getFloat64(o + 4, true),
+        high: view.getFloat64(o + 12, true),
+        low: view.getFloat64(o + 20, true),
+        close: view.getFloat64(o + 28, true),
+        volume: view.getFloat64(o + 36, true),
+      };
+    }
+    return out;
+  }
+  async function deflateBytes(u8) {
+    if (typeof CompressionStream === "undefined") return { body: u8, flag: 0 };
+    try {
+      const stream = new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate"));
+      const body = new Uint8Array(await new Response(stream).arrayBuffer());
+      return body.byteLength < u8.byteLength ? { body, flag: 1 } : { body: u8, flag: 0 };
+    } catch (_) { return { body: u8, flag: 0 }; }
+  }
+  async function inflateBytes(u8) {
+    if (typeof DecompressionStream === "undefined") throw new Error("no DecompressionStream");
+    const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  async function encodeTxb(bars) {
+    const cols = encodeColumns(bars);
+    const { body, flag } = await deflateBytes(cols);
+    const out = new Uint8Array(12 + body.byteLength);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, TXB_MAGIC, true);
+    out[4] = flag; out[5] = 1; // ver
+    view.setUint16(6, 0, true);
+    view.setUint32(8, bars.length, true);
+    out.set(body, 12);
+    return out.buffer;
+  }
+  async function decodeTxb(buf) {
+    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    if (u8.byteLength < 12) return [];
+    const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    if (view.getUint32(0, true) !== TXB_MAGIC) return [];
+    const flag = u8[4], count = view.getUint32(8, true);
+    if (!count) return [];
+    let body = u8.subarray(12);
+    if (flag & 1) body = await inflateBytes(body);
+    if (body.byteLength < count * 44) return [];
+    return decodeColumns(body, count);
+  }
+  async function rowToBars(row) {
+    if (!row) return [];
+    if (row.bin) return decodeTxb(row.bin);                 // TXB1 compact
+    if (Array.isArray(row.bars)) return row.bars;           // legacy object rows
+    if (row instanceof ArrayBuffer || ArrayBuffer.isView(row)) return decodeTxb(row);
+    return [];
+  }
+  let _idb;
+  function openBarsDb() {
+    if (_idb) return _idb;
+    _idb = new Promise((resolve, reject) => {
+      if (!window.indexedDB) return reject(new Error("no indexedDB"));
+      const req = indexedDB.open(IDB_NAME, IDB_VER);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return _idb;
+  }
+  async function idbGetSeries(key) {
+    try {
+      const db = await openBarsDb();
+      const row = await new Promise((resolve, reject) => {
+        const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(key);
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+      return await rowToBars(row);
+    } catch (_) { return []; }
+  }
+  async function idbPutSeries(key, bars) {
+    try {
+      const trimmed = bars.length > SERIES_MAX ? bars.slice(-SERIES_MAX) : bars;
+      const bin = await encodeTxb(trimmed);
+      const db = await openBarsDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put({ bin, at: Date.now(), n: trimmed.length }, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      // Soft cap how many symbol/tf series we keep (drop oldest by `at`).
+      const all = await new Promise((resolve, reject) => {
+        const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).getAllKeys();
+        r.onsuccess = () => resolve(r.result || []);
+        r.onerror = () => reject(r.error);
+      });
+      if (all.length <= SERIES_KEYS_MAX) return;
+      const meta = await Promise.all(all.map(async (k) => {
+        const row = await new Promise((resolve, reject) => {
+          const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(k);
+          r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+        });
+        return { k, at: row?.at || 0 };
+      }));
+      meta.sort((a, b) => a.at - b.at);
+      const drop = meta.slice(0, Math.max(0, meta.length - SERIES_KEYS_MAX));
+      if (!drop.length) return;
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        for (const x of drop) store.delete(x.k);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) {}
+  }
+  async function networkBars(symbol, tf, toMs, limit, source) {
+    const u = `/api/bars?symbol=${encodeURIComponent(symbol)}&tf=${tf}&limit=${limit}&source=${source}` + (toMs ? `&to=${Math.floor(toMs)}` : "");
+    const r = await fetch(u);
+    const j = await r.json();
+    if (!Array.isArray(j)) throw new Error(j.error || "history failed");
+    return j;
+  }
+  async function fillGapToNow(series, symbol, tf, source) {
+    if (!series.length) return networkBars(symbol, tf, null, 1000, source);
+    const sec = TF_SEC[tf] || 60;
+    const lastT = series[series.length - 1].time;
+    const gap = Math.max(0, Math.ceil((Date.now() / 1000 - lastT) / sec));
+    // Small gap: one latest request covers local tip → now (also refreshes the forming candle).
+    if (gap <= 1000) {
+      return mergeBars(series, await networkBars(symbol, tf, null, Math.min(1000, Math.max(5, gap + 3)), source));
+    }
+    // Large downtime: live tip first, then page backward until the page overlaps the local tip.
+    let out = series, page = await networkBars(symbol, tf, null, 1000, source);
+    for (let guard = 0; page.length && guard < 40; guard++) {
+      out = mergeBars(out, page);
+      if (page[0].time <= lastT + sec * 2) break;
+      page = await networkBars(symbol, tf, page[0].time * 1000 - 1, 1000, source);
+    }
+    return out;
+  }
+  async function ensureOlder(series, symbol, tf, source, toMs, limit) {
+    let out = series, pageTo = toMs, guard = 0;
+    while (sliceBars(out, toMs, limit).length < limit && guard++ < 40) {
+      const need = limit - sliceBars(out, toMs, limit).length;
+      const got = await networkBars(symbol, tf, pageTo, Math.min(1000, Math.max(need, 50)), source);
+      if (!got.length) break;
+      const older = out.length ? got.filter((b) => b.time < out[0].time) : got;
+      out = mergeBars(out, got);
+      if (!older.length) break;
+      pageTo = out[0].time * 1000 - 1;
+    }
+    return out;
+  }
+
   async function history(symbol, tf, toMs, limit = 1000, source) {
     source = source || window.srcOf(symbol);
-    const u = `/api/bars?symbol=${encodeURIComponent(symbol)}&tf=${tf}&limit=${limit}&source=${source}` + (toMs ? `&to=${Math.floor(toMs)}` : "");
+    limit = Math.max(1, limit | 0);
+    const toKey = toMs ? Math.floor(toMs) : "";
+    const reqKey = `${source}|${symbol}|${tf}|${toKey}|${limit}`;
+    const seriesKey = `${source}|${symbol}|${tf}`;
+    const cache = barsCache();
     const say = (extra) => { if (window.LabEmbedded) setTimeout(() => window.parent.postMessage({ evt: "loaded", symbol, tf, ...extra }, location.origin), 120); };
+    const hit = cache.map.get(reqKey);
+    const ttl = toMs ? CACHE_TTL_HIST_MS : CACHE_TTL_LATEST_MS;
+    if (hit && Date.now() - hit.at < ttl) {
+      say({ bars: hit.bars.length, cached: true });
+      return copyBars(hit.bars);
+    }
+    if (cache.inflight.has(reqKey)) {
+      try {
+        const bars = await cache.inflight.get(reqKey);
+        say({ bars: bars.length, cached: true });
+        return copyBars(bars);
+      } catch (e) { say({ error: String(e.message || e) }); throw e; }
+    }
+    const pending = (async () => {
+      let series = await idbGetSeries(seriesKey);
+      const fromLocal = series.length;
+      if (!toMs) {
+        series = fromLocal ? await fillGapToNow(series, symbol, tf, source)
+          : await networkBars(symbol, tf, null, Math.min(limit, 1000), source);
+        if (series.length < limit) series = await ensureOlder(series, symbol, tf, source, series[0] ? series[0].time * 1000 - 1 : null, limit);
+      } else {
+        const localPage = sliceBars(series, toMs, limit);
+        if (localPage.length < limit) series = await ensureOlder(series, symbol, tf, source, toMs, limit);
+        // Refresh nothing on pure historical pages when local already covers `limit` bars ending at `to`.
+        else if (!fromLocal) series = await networkBars(symbol, tf, toMs, limit, source);
+      }
+      await idbPutSeries(seriesKey, series);
+      const out = sliceBars(series, toMs || null, limit);
+      cachePut(cache, reqKey, out);
+      return out;
+    })();
+    cache.inflight.set(reqKey, pending);
     try {
-      const r = await fetch(u);
-      const j = await r.json();
-      if (!Array.isArray(j)) throw new Error(j.error || "history failed");
+      const j = await pending;
       say({ bars: j.length });  // TradeX lifts its "Loading" cover only after the new ticker's candles arrived
-      return j; // time in epoch seconds
+      return copyBars(j);
     } catch (e) { say({ error: String(e.message || e) }); throw e; }
+    finally { cache.inflight.delete(reqKey); }
   }
 
   // Live candle updates. onBar(bar) gets {time(sec),open,high,low,close,volume}.
