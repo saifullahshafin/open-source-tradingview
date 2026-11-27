@@ -15,8 +15,8 @@
 - Do not commit `.env`, MT5 tokens or SSH keys.
 
 ## Get TradeX only from official places
-Install only from this repository's releases or the one-line installer in the README, and use the web version
-only at https://tradex.pages.dev (the old address https://tradex-charts.vercel.app forwards there). A copy offered anywhere else under the TradeX name is not official and may be
+Install only from this repository's releases or the one-line installer in the README. A copy offered anywhere
+else under the TradeX name is not official and may be
 changed to steal keys or passwords. List of official places: [TRADEMARK.md](TRADEMARK.md).
 
 ## Reporting a problem

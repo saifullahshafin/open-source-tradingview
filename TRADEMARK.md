@@ -15,8 +15,6 @@ or to any other product with a similar name. Nothing in this policy makes any cl
 ## Official TradeX
 Only these are official:
 - the code at https://github.com/saifullahshafin/open-source-tradingview and its releases
-- the web version at https://tradex.pages.dev
-- https://tradex-charts.vercel.app (the old web address; it forwards to tradex.pages.dev)
 - any other site or account that the README above lists as official
 
 ## You may, without asking

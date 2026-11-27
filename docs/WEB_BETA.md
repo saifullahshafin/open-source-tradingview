@@ -1,7 +1,6 @@
-# TradeX web beta (tradex.pages.dev)
+# TradeX web beta
 
-Hosted on Cloudflare Pages since 2026-11-25 (free, unlimited static requests). The old address
-tradex-charts.vercel.app shows a "TradeX has moved" page that forwards here.
+Hosted on Cloudflare Pages (free, unlimited static requests). The web version is in private early access.
 
 The same TradeX pages, served as a static site with **no TradeX server**. Each visitor's browser fetches free
 exchange data itself (their own IP, so no shared rate limit and nothing to pay).

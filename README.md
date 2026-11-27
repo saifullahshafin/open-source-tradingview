@@ -4,16 +4,12 @@ TradeX is a free, self-hosted, TradingView-style charting app that runs on your 
 It puts one interface over several free market-data feeds and three chart engines. It runs Pine Script
 indicators and can also show candles from your own MetaTrader 5 terminal, on this PC or on a VPS.
 
-**Try it in your browser, nothing to install:** [tradex.pages.dev](https://tradex.pages.dev) (web beta:
-free exchange charts, indicators, Pine Script, order flow (delta, volume profile), layouts saved in your browser. MT5 and alerts need the
-free desktop version below.)
-
 > Not affiliated with, endorsed by, or connected to TradingView, Inc. "TradingView" is their trademark.
 > This project is an independent open-source tool. It is not financial advice.
 > Also not affiliated with [TradeX Chart](https://github.com/tradex-app/TradeX-chart) (the `tradex-chart` library),
 > a separate project with a similar name.
 >
-> **Official TradeX** is only this repository and [tradex.pages.dev](https://tradex.pages.dev). Forks are welcome under
+> **Official TradeX** is only this repository. Forks are welcome under
 > their own name and logo: see [TRADEMARK.md](TRADEMARK.md).
 
 ![TradeX: gold on the free Deriv feed, Vela engine](docs/screenshots/01_hub_vela_gold.png)
