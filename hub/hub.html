@@ -240,8 +240,12 @@ async function restartChart() {
   b.disabled = false; setTimeout(() => { msg.textContent = ""; }, 15000);
 }
 function loadEngine() {
+  if (window.layoutsSuspend) window.layoutsSuspend();  // freeze autosave so a blank iframe cannot overwrite a multi-pane layout
   cover(st.ticker);
-  $("layout").value = "";  // a freshly loaded engine starts with one chart
+  // Keep the layout dropdown when returning to Vela (layoutsBeforeReapply restores grid + per-cell TFs).
+  // Other engines have no multi-pane grid in the hub control.
+  if (st.engine !== "vela") $("layout").value = "";
+  else if (!$("layout").value && window.layoutsLastGrid) $("layout").value = window.layoutsLastGrid() || "";
   reapply = true; liveIds = {};
   $("frame").src = `${st.engine}.html?symbol=${encodeURIComponent(st.ticker)}&tf=${st.tf}&embed=1`;
 }
