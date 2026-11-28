@@ -87,6 +87,9 @@ RATE_INTERVAL = 0.36               # SmartAPI allows ~3 requests/second; 0.36 s 
 # not per process: the hub and a backfill on the same account share one budget.
 MAX_PER_SEC = 2                    # stay under 3/s even when both processes burst at once
 MAX_PER_MIN = 110                  # under the 120/min cap
+MAX_PER_HOUR = 4500                # under the 5000/h cap; without this an idle hour spent on charts
+                                   # could still run the account into the hourly wall
+MAX_WAIT_S = 20                    # longer than this and a chart request gets an answer, not a hang
 RATE_FILE = os.path.join(DATA, "angel_rate.json")   # recent call times, shared by every process
 MINUTE_RETENTION_DAYS = 100        # Angel serves roughly the last 100 days of intraday candles
 DAY_RETENTION_DAYS = 2000
@@ -262,10 +265,12 @@ def _file_unlock(fh):
 
 
 def _rate_budget():
-    """Reserve a call inside Angel's per-second and per-minute caps, counting every process on
-    this PC that uses the same client code. Without it the hub and a backfill can each stay
-    under the cap and still get 403 together (a plain-text "Access denied", not JSON)."""
-    windows = ((1.0, MAX_PER_SEC), (60.0, MAX_PER_MIN))
+    """Reserve a call inside Angel's per-second, per-minute and per-hour caps, counting every process
+    on this PC that uses the same client code. Without it the hub and a backfill can each stay under
+    the cap and still get 403 together (a plain-text "Access denied", not JSON).
+    A short shortage is waited out; a long one fails fast with a readable message instead of hanging
+    a chart request for a minute."""
+    windows = ((1.0, MAX_PER_SEC), (60.0, MAX_PER_MIN), (3600.0, MAX_PER_HOUR))
     while True:
         try:
             fh = _file_lock(RATE_FILE + ".lock")
@@ -275,7 +280,7 @@ def _rate_budget():
             now = time.time()
             try:
                 with open(RATE_FILE, encoding="utf-8") as src:
-                    recent = [t for t in json.load(src) if isinstance(t, (int, float)) and now - t < 60]
+                    recent = [t for t in json.load(src) if isinstance(t, (int, float)) and now - t < 3600]
             except (OSError, ValueError):
                 recent = []
             wait = 0.0
@@ -295,6 +300,9 @@ def _rate_budget():
                 return
         finally:
             _file_unlock(fh)
+        if wait > MAX_WAIT_S:
+            raise AngelError(f"Angel One call budget used up ({len(recent)} calls in the last hour, "
+                             f"cap {MAX_PER_HOUR}); showing saved candles until it frees up")
         time.sleep(min(max(wait, 0.02), 1.0))
 
 
@@ -819,15 +827,155 @@ def _local_bars(symbol, tf, limit, to_ms=None):
     return out[-max(1, int(limit or 1000)):]
 
 
-def history(symbol, tf, limit=1000, to_ms=None):
-    """Angel candles, or the candles saved by the backfill when Angel keeps refusing (403)."""
+# --------------------------------------------------------------------------- candle cache
+# Every online fetch is merged into data/cache/angel/<tf>/<TICKER>.csv. Opening a chart again, or
+# scrolling back over ground already covered, then costs zero API calls instead of one per pane,
+# which is what keeps the account off Angel's 3/s and 120/min walls.
+CACHE_DIR = os.path.join(DATA, "cache", "angel")
+CACHE_MAX = 20000        # bars kept per symbol and timeframe
+CACHE_WRITE_S = 60       # at most one rewrite per symbol and timeframe per minute while polling
+CACHE_GRACE_S = 120      # a cache filled this recently is shown without asking Angel again
+_cached = {}             # (symbol, tf) -> {"mtime": float, "bars": [...]}
+_cached_lock = threading.Lock()
+_cache_written = {}      # (symbol, tf) -> monotonic time of the last write
+_last_fetch = {}         # (symbol, tf) -> monotonic time of the last successful online fetch
+_refreshing = set()      # (symbol, tf) with a stale-while-revalidate fetch running
+_refresh_lock = threading.Lock()
+
+
+def _cache_path(symbol, tf):
+    return os.path.join(CACHE_DIR, tf, re.sub(r"[^A-Za-z0-9._-]+", "_", str(symbol)) + ".csv")
+
+
+def _cache_read(symbol, tf):
+    path = _cache_path(symbol, tf)
     try:
-        return _history_online(symbol, tf, limit, to_ms)
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    with _cached_lock:
+        hit = _cached.get((symbol, tf))
+    if hit and hit["mtime"] == mtime:
+        return hit["bars"]
+    import csv
+    bars = []
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                try:
+                    bars.append({"time": int(float(row["time"])), "open": float(row["open"]),
+                                 "high": float(row["high"]), "low": float(row["low"]),
+                                 "close": float(row["close"]), "volume": float(row.get("volume") or 0)})
+                except (KeyError, TypeError, ValueError):
+                    continue
+    except OSError:
+        return None
+    bars.sort(key=lambda b: b["time"])
+    with _cached_lock:
+        if len(_cached) > 256:
+            _cached.clear()
+        _cached[(symbol, tf)] = {"mtime": mtime, "bars": bars}
+    return bars
+
+
+def _cache_write(symbol, tf, bars, force=False):
+    if not bars:
+        return
+    now = time.monotonic()
+    if not force and now - _cache_written.get((symbol, tf), 0) < CACHE_WRITE_S:
+        return
+    _cache_written[(symbol, tf)] = now
+    merged = {b["time"]: b for b in (_cache_read(symbol, tf) or [])}
+    for b in bars:
+        merged[b["time"]] = b
+    out = [merged[t] for t in sorted(merged)][-CACHE_MAX:]
+    path = _cache_path(symbol, tf)
+    import csv
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["time", "open", "high", "low", "close", "volume"])
+            w.writerows((b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"]) for b in out)
+        os.replace(tmp, path)
+        with _cached_lock:
+            _cached[(symbol, tf)] = {"mtime": os.path.getmtime(path), "bars": out}
+    except OSError:
+        pass
+
+
+def _cache_slice(bars, want, anchor_s):
+    """The newest `want` cached bars that opened at or before anchor_s (may be fewer)."""
+    if not bars:
+        return []
+    out = [b for b in bars if b["time"] <= anchor_s]
+    return out[-want:]
+
+
+def _refresh_async(symbol, tf, want, to_ms):
+    """One background fetch per symbol while charts keep painting from the cache. The live poller
+    rebroadcasts history if the gap it finds is bigger than one candle, so nothing is missed."""
+    key = (symbol, tf)
+    with _refresh_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def work():
+        try:
+            bars = _history_online(symbol, tf, want, to_ms)
+            _cache_write(symbol, tf, bars, force=True)
+            _last_fetch[key] = time.monotonic()
+        except Exception:
+            pass
+        finally:
+            with _refresh_lock:
+                _refreshing.discard(key)
+
+    threading.Thread(target=work, daemon=True, name="angel-refresh").start()
+
+
+def _cache_fresh(bars, tf, anchor_s):
+    """Cached data is usable without a call when it reaches the requested time. The tail is allowed
+    to be two candles old: polling fills it faster than a chart can be reopened."""
+    if not bars:
+        return False
+    return bars[-1]["time"] >= anchor_s - max(2 * TF_SEC.get(tf, 60), 120)
+
+
+def history(symbol, tf, limit=1000, to_ms=None):
+    """Angel candles, served from the local cache when it already covers the request (no API call),
+    else fetched online and merged back into the cache. Candles saved by scripts/angel_backfill.py
+    are the last resort when Angel keeps refusing (403)."""
+    want = max(1, min(int(limit or 1000), 5000))
+    anchor_s = int(to_ms) // 1000 if to_ms else int(time.time())
+    live_tail = not to_ms and want <= 6     # the live poll: always ask for the newest bars
+    cached = None if live_tail else _cache_read(symbol, tf)
+    if cached:
+        window = _cache_slice(cached, want, anchor_s)
+        span = TF_SEC.get(tf, 60)
+        recent = time.monotonic() - _last_fetch.get((symbol, tf), 0.0)
+        # "Covered" means the cache reaches back far enough for the whole window. Fewer bars than
+        # asked is normal (weekend, holiday, a young listing) as long as nothing before them exists.
+        covered = bool(window) and (len(window) >= want or cached[0]["time"] <= anchor_s - want * span + span)
+        if covered and (_cache_fresh(cached, tf, anchor_s) or recent < max(CACHE_GRACE_S, span)):
+            return window                   # the chart paints now, no API call
+        if covered:
+            _refresh_async(symbol, tf, want, to_ms)   # stale-while-revalidate: paint now, update behind it
+            return window
+    try:
+        bars = _history_online(symbol, tf, want, to_ms)
+        _last_fetch[(symbol, tf)] = time.monotonic()
     except AngelError:
-        saved = _local_bars(symbol, tf, limit, to_ms)
+        saved = _cache_slice(cached, want, anchor_s) if cached else []
+        if not saved:
+            saved = _local_bars(symbol, tf, want, to_ms)
         if saved:
             return saved
         raise
+    _cache_write(symbol, tf, bars)
+    return bars
 
 
 def _history_online(symbol, tf, limit=1000, to_ms=None):
@@ -853,10 +1001,11 @@ def _history_online(symbol, tf, limit=1000, to_ms=None):
 
 # --------------------------------------------------------------------------- stream
 async def stream(ws, symbol, tf):
-    """Live updates over the same REST path with the shared cache: one upstream request per symbol
-    per ~2 s no matter how many charts watch it."""
+    """Live updates over the REST path, one shared poller per symbol (base.poll_stream), on an
+    interval that follows the timeframe. Angel caps are per client code, so two charts of the same
+    symbol must cost one request stream, not two."""
     from .base import poll_stream
-    await poll_stream(ws, history, symbol, tf, MANIFEST["name"], history=300, every=2.0)
+    await poll_stream(ws, history, symbol, tf, MANIFEST["name"], history=300)
 
 
 def selftest():

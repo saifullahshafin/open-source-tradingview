@@ -78,6 +78,14 @@ BINANCE_SYM = {"XAUUSD": "BINF_XAUUSDT", "XAGUSD": "BINF_XAGUSDT"}
 BINANCE_SPOT_REST, BINANCE_FUT_REST = "https://api.binance.com/api/v3/klines", "https://fapi.binance.com/fapi/v1/klines"
 BINANCE_SPOT_WS, BINANCE_FUT_WS = "wss://data-stream.binance.vision/ws/", "wss://fstream.binance.com/market/ws/"
 
+# Known chart sources. An unknown `source` is rejected with an error instead of silently falling back to
+# Binance (the old behaviour). Plugins can appear after the server starts, so this is rebuilt whenever
+# the source list is read (GET /api/symbols) and once at startup.
+KNOWN_SOURCES = {"mt5", "deriv", "arm", "bybit"}
+
+def _refresh_known_sources():
+    KNOWN_SOURCES.update(feeds.enabled().keys())
+
 def bsym_of(symbol):
     """Ticker -> (Binance symbol, is_futures)."""
     s = symbol.upper().split(":")[-1]
@@ -802,8 +810,14 @@ async def handler(ws):
             if tf not in TF_SEC:
                 await ws.send(json.dumps({"type": "error", "msg": f"Unknown timeframe {tf}"}))
                 continue
-            fn = feeds.stream_fn(src) or {"mt5": stream_mt5, "deriv": stream_deriv, "arm": stream_arm, "bybit": stream_bybit}.get(src, stream_binance)
-            task = feedlog.start_stream(fn, ws, src if fn is not stream_binance else "binance", sym, tf)
+            if not src or src not in KNOWN_SOURCES:
+                await ws.send(json.dumps({"type": "error", "msg": f"Unknown source {src or '(empty)'}"}))
+                continue
+            fn = feeds.stream_fn(src) or {"mt5": stream_mt5, "deriv": stream_deriv, "arm": stream_arm, "bybit": stream_bybit}.get(src)
+            if fn is None:
+                await ws.send(json.dumps({"type": "error", "msg": f"No stream for source {src}"}))
+                continue
+            task = feedlog.start_stream(fn, ws, src, sym, tf)
     except websockets.ConnectionClosed:
         pass
     finally:
@@ -811,11 +825,15 @@ async def handler(ws):
             task.cancel()
 
 def history_fn(src):
-    """Candle history function for a source id: a plugin's history(), else the built-in feeds (Binance default)."""
-    plug = feeds.get(src or "")
+    """Candle history function for a source id: a plugin's history(), else the built-in feeds.
+    An unknown `src` is an error — the old Binance fallback was the cause of "unknown source silently
+    serves Binance candles"."""
+    if not src or src not in KNOWN_SOURCES:
+        raise KeyError(f"unknown source: {src or '(empty)'}")
+    plug = feeds.get(src)
     if plug:
         return plug.history
-    return {"mt5": mt5_history, "deriv": deriv_history, "arm": arm_history, "bybit": bybit_history}.get(src, binance_history)
+    return {"mt5": mt5_history, "deriv": deriv_history, "arm": arm_history, "bybit": bybit_history}.get(src)
 
 def binance_history(symbol, tf, limit=HISTORY, to_ms=None):
     """History for scroll-back. to_ms = newest bar open time wanted (epoch ms)."""
@@ -1118,9 +1136,11 @@ def static_allowed(path):
     return bool(_STATIC_RE.match(p)) and ".bak" not in p and ".." not in p and "\\" not in p
 
 class LabHandler(SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # keep-alive: browsers reuse the connection for many small requests
+
     def do_HEAD(self):
         if not static_allowed(self.path):
-            self.send_response(404); self.end_headers(); return
+            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
         return super().do_HEAD()
 
     """Static files plus GET /api/bars?symbol=&tf=&limit=&to=<ms>&source=binance|mt5 and GET /api/symbols."""
@@ -1135,6 +1155,7 @@ class LabHandler(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/symbols"):
             crypto = binance_cache["list"]
             mt5_list, err = mt5_symbol_list()
+            _refresh_known_sources()  # plugins can be switched on between restarts; keep /api/bars and the WS stream honest
             return self._json({"symbols": arm_symbols_cache + bybit_symbols_cache + deriv_symbols_cache + mt5_list + crypto + feeds.all_symbols(), "mt5": err or "ok", "arm": arm_status["msg"],
                                "deriv": len(deriv_symbols_cache), "bybit": len(bybit_symbols_cache), "ws_port": WS_PORT}, 200)
         if self.path.startswith("/api/sources"):   # chart-source plugins (hub/feeds/): manifest + on/off + health
@@ -1255,6 +1276,9 @@ class LabHandler(SimpleHTTPRequestHandler):
                 raise RuntimeError("no candles")
             body, code = json.dumps(bars).encode(), 200
             feedlog.http_bars(q.get("source"), q.get("symbol"), q.get("tf"), n=len(bars))
+        except KeyError as e:
+            body, code = json.dumps({"error": str(e)}).encode(), 400
+            feedlog.http_bars(q.get("source"), q.get("symbol"), q.get("tf"), err=str(e))
         except Exception as e:
             msg = str(e)
             if q.get("source") == "arm" and not q.get("to") and isinstance(e, RuntimeError) and ARM_DEAD_RE.search(msg):
@@ -1307,6 +1331,8 @@ class LabHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)}, 400)
         if self.path.startswith("/api/backtest/"):   # start a run (the job runs in a background thread)
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._json({"ok": False, "error": "only this computer can start a backtest"}, 403)
             from urllib.parse import urlparse
             action = urlparse(self.path).path.split("/")[3]
             try:
@@ -1323,6 +1349,8 @@ class LabHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"}, 400)
         if self.path.startswith("/api/restart"):
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._json({"ok": False, "error": "only this computer can restart the remote bridge"}, 403)
             if not restart_state["running"]:
                 restart_state["running"] = True  # set here so a double click cannot start two restarts
                 threading.Thread(target=arm_restart, daemon=True).start()
@@ -1366,18 +1394,27 @@ class LabHandler(SimpleHTTPRequestHandler):
         pass
 
 class HubHTTPServer(ThreadingHTTPServer):
+    # Under real concurrency the TCP listen backlog is the bottleneck. The default (5) drops new
+    # connections as TCP SYN retries: measured ~1 s stalls for roughly half the requests at n=24.
+    # 128 is a safe local dev value and the process is single-machine, so long queues drain quickly.
+    request_queue_size = 128
+    daemon_threads = True  # the per-request worker threads do not hold the process up on shutdown
+
     def handle_error(self, request, client_address):
         """A closed browser tab is not an error; anything else keeps its traceback."""
-        import traceback
-        e = sys.exc_info()[1]
+        import traceback, sys as _sys
+        e = _sys.exc_info()[1]
         if isinstance(e, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
-            logbus.ev("server", "debug", f"browser dropped a request ({e.__class__.__name__})", every=60, persist=False)
-        else:
-            logbus.ev("server.err", "error", traceback.format_exc())
+            return
+        logbus.ev("server.err", "error", traceback.format_exc())
 
 def run_http():
-    h = functools.partial(LabHandler, directory=HERE)
-    HubHTTPServer((BIND_HOST, HTTP_PORT), h).serve_forever()
+    srv = HubHTTPServer((BIND_HOST, HTTP_PORT), functools.partial(LabHandler, directory=HERE))
+    print("run_http: serve_forever starting", flush=True)
+    try:
+        srv.serve_forever()
+    finally:
+        print("run_http: serve_forever returned", flush=True)
 
 def ports_free_or_exit():
     """Before anything starts: both ports must be free. TradeX already running -> say where; another program -> say how to change."""
@@ -1401,6 +1438,7 @@ def ports_free_or_exit():
 async def main():
     ports_free_or_exit()
     logbus.install(lambda: CLOCK_OFFSET_MS)
+    _refresh_known_sources()  # pins the built-in set plus whatever plugins are on at startup
     threading.Thread(target=run_http, daemon=True).start()
     threading.Thread(target=mt5_watchdog, daemon=True).start()
     if REMOTE_ON:   # remote MT5 set up in .env (REMOTE_MT5_SSH_HOST)
@@ -1424,6 +1462,7 @@ async def main():
     print(f"TradeX: open http://localhost:{HTTP_PORT}/  (data on ws://localhost:{WS_PORT})", flush=True)
     async with websockets.serve(handler, BIND_HOST, WS_PORT, max_size=None):
         await asyncio.Future()
+
 
 if __name__ == "__main__":
     try:

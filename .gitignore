@@ -1,11 +1,21 @@
-# secrets
+# secrets, credentials, API keys & sessions
 .env
 *.env
+*.env.*
 !.env.example
 *.pem
 *.key
 id_rsa*
 id_ed25519*
+*auth*.json
+*session*.json
+*credentials*.json
+*secret*.json
+*account*.json
+*.token
+*.totp
+*api_key*
+*apikey*
 
 # runtime
 hub/logs/
