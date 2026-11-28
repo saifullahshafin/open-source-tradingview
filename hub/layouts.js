@@ -9,7 +9,7 @@
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
   let curId = lsGet(LS_ID, ""), curName = "", auto = lsGet(LS_AUTO, "1") === "1";
-  let lastChartDoc = null, saveTimer = null, saving = false, dirtyAgain = false, state = "", list = { layouts: [], templates: [] };
+  let lastChartDoc = null, lastGrid = "", saveTimer = null, saving = false, dirtyAgain = false, state = "", list = { layouts: [], templates: [] };
   let bootApplied = false, ready = false, confirmDel = null, editing = null;   // ready: the layout is back on screen (no autosave before, or an empty chart would overwrite it)   // editing: "rename" | "saveas" | "template" | null
 
   const api = async (path, body) => {
@@ -19,17 +19,48 @@
   const cleanInds = () => INDS.map((x) => { const y = { ...x }; delete y.err; delete y.pending; delete y.wait; delete y.notes; delete y.convFrom; return y; });
   const themeNow = () => { try { return JSON.parse(lsGet("chartHubTheme", "{}")); } catch (_) { return {}; } };
   const summary = () => `${st.key} ${(TFS.find((t) => t[0] === st.tf) || [0, st.tf])[1]} · ${INDS.length} indicator${INDS.length === 1 ? "" : "s"}`;
+  const rememberGrid = (g) => { if (g) lastGrid = g; };
+  const gridFromChart = (chart) => {
+    const lay = chart && chart.vela && chart.vela.layout;
+    if (lay == null || lay === "" || lay === "1" || lay === 1 || lay === true) return "";
+    return String(lay);
+  };
+  const chartCells = (chart) => ((((chart || {}).vela) || {}).charts) || [];
+  // Refuse to overwrite a multi-pane layout with a thinner snapshot (blank engine / 1-cell rebuild).
+  const wouldShrink = (prev, next, grid) => {
+    const pn = chartCells(prev).length, nn = chartCells(next).length;
+    if (pn > 1 && nn < pn) return true;
+    if ((lastGrid || gridFromChart(prev)) && !(grid || gridFromChart(next))) return true;
+    return false;
+  };
 
   async function buildDoc() {
-    if (st.engine === "vela") { const r = await ask("doc:get", {}, 6000); if (r.ok) lastChartDoc = r.doc; }
+    // Only snapshot the live Vela workspace while it is mounted. Switching to Lightweight/KLine must NOT
+    // replace a multi-pane chart document with an empty iframe / blank grid (that was wiping mtf layouts).
+    let live = lastChartDoc;
+    if (st.engine === "vela") {
+      const r = await ask("doc:get", {}, 6000);
+      if (r.ok) live = r.doc;
+      rememberGrid($("layout").value || gridFromChart(live));
+    }
+    const grid = (st.engine === "vela" ? ($("layout").value || lastGrid) : lastGrid) || gridFromChart(live) || gridFromChart(lastChartDoc) || "";
+    // Keep the richer chart document when a live snapshot would shrink the workspace.
+    const chart = (st.engine === "vela" && live && !wouldShrink(lastChartDoc, live, grid)) ? live : (live || lastChartDoc);
+    if (chart && chartCells(chart).length >= chartCells(lastChartDoc).length) lastChartDoc = chart;
     return { v: 1, hub: { key: st.key, broker: st.broker, ticker: st.ticker, tf: st.tf, engine: st.engine },
-             grid: $("layout").value || "", theme: themeNow(), inds: cleanInds(), chart: lastChartDoc };
+             grid, theme: themeNow(), inds: cleanInds(), chart: lastChartDoc };
   }
   async function saveNow(asNew, name) {
     if (saving) { dirtyAgain = true; return; }
+    // Updates while not on Vela would persist hub/inds with a blank grid and stale/missing panes — skip.
+    // Explicit "Save as new" from a non-Vela engine is still refused for the same reason.
+    if (st.engine !== "vela") { setState("Switch to Vela to save the chart layout"); return; }
     saving = true; setState("Saving...");
     try {
       const doc = await buildDoc();
+      if (!asNew && !chartCells(doc.chart).length && lastGrid) {
+        setState("Skipped save (chart not ready)"); saving = false; return;
+      }
       const r = await api("/save", { kind: "layouts", id: asNew ? "" : curId, name: name || curName || "My layout", doc, summary: summary() });
       curId = r.id; curName = name || curName || "My layout"; lsSet(LS_ID, curId); setState("Saved");
       refreshList();
@@ -41,23 +72,36 @@
     if (!auto) { setState("Unsaved changes"); return; }
     clearTimeout(saveTimer);
     // Never save while a chart is loading or before the layout was put back: the empty chart would overwrite it.
-    saveTimer = setTimeout(() => { if (!ready || (typeof pending !== "undefined" && pending)) return schedule(); saveNow(false); }, 2500);
+    saveTimer = setTimeout(() => { if (!ready || st.engine !== "vela" || (typeof pending !== "undefined" && pending)) return schedule(); saveNow(false); }, 2500);
   }
   window.layoutsDirty = schedule;
   window.layoutsReady = () => ready;   // alerts_dialog.js: no drawing checks while a layout is being put back     // hub + indicator code call this on any change
+  window.layoutsSuspend = () => { ready = false; clearTimeout(saveTimer); };  // loadEngine: freeze autosave until restore finishes
+  window.layoutsLastGrid = () => lastGrid;
 
-  // Engine (re)loaded: put the layout's chart document back BEFORE the hub re-adds the indicators.
-  // First load or an explicit layout load = whole document; later reloads (Restart chart, engine switch) = drawings only.
+  // Engine (re)loaded: always put the FULL saved chart document back (grid + per-cell timeframes + drawings).
+  // Previously, engine switches only restored drawings — multi-pane TFs collapsed to one chart.
   window.layoutsBeforeReapply = async function () {
     ready = false;
     try {
       if (st.engine !== "vela" || !curId) return;   // finally{} still marks ready
-      const full = !bootApplied; bootApplied = true;
-      let chart = lastChartDoc;
-      if (full || !chart) { const d = await api("?kind=layouts&id=" + encodeURIComponent(curId)); curName = d.name; chart = d.doc && d.doc.chart; if (full && d.doc && d.doc.grid) $("layout").value = d.doc.grid; }
+      bootApplied = true;
+      const d = await api("?kind=layouts&id=" + encodeURIComponent(curId));
+      curName = d.name;
+      const doc = d.doc || {};
+      const chart = doc.chart || lastChartDoc;
+      if (doc.grid) { $("layout").value = doc.grid; rememberGrid(doc.grid); }
+      else rememberGrid(gridFromChart(chart));
+      if (Array.isArray(doc.inds)) {
+        lsSet("chartHubIndicators", JSON.stringify(doc.inds));
+        try { INDS.splice(0, INDS.length, ...doc.inds); } catch (_) {}
+      }
+      if (chart) lastChartDoc = chart;
       if (!chart) return;
-      const r = await ask("doc:apply", { doc: full ? chart : { drawBook: chart.drawBook } }, 8000);
+      const r = await ask("doc:apply", { doc: chart }, 8000);
       if (!r.ok) console.warn("layout apply", r.error);
+      // Keep the hub layout dropdown in sync with the restored workspace.
+      if (doc.grid) $("layout").value = doc.grid;
       paintButton();
     } catch (e) { console.warn("layout restore", e); }
     finally { setTimeout(() => { ready = true; }, 1500); }   // let the restore's own change events pass first
@@ -66,11 +110,15 @@
   // Load another layout: write its parts where the hub reads them at start, then start fresh.
   async function loadLayout(id) {
     try {
-      if (curId && auto) { clearTimeout(saveTimer); await saveNow(false); }
+      clearTimeout(saveTimer);
+      // Snapshot the layout we are leaving (not the one we are opening — that used to overwrite mtf with a blank engine).
+      if (curId && auto && curId !== id && st.engine === "vela" && ready) await saveNow(false);
       const d = await api("?kind=layouts&id=" + encodeURIComponent(id)), doc = d.doc || {};
       if (doc.hub) lsSet("chartHub", JSON.stringify(doc.hub));
       if (doc.theme) lsSet("chartHubTheme", JSON.stringify(doc.theme));
       lsSet("chartHubIndicators", JSON.stringify(doc.inds || []));
+      if (doc.grid) rememberGrid(doc.grid);
+      if (doc.chart) lastChartDoc = doc.chart;
       lsSet(LS_ID, id); location.reload();
     } catch (e) { setState("Could not load: " + e.message); }
   }
