@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "agent-council": {
+      "source": "magnus919/agent-skills",
+      "commit": "3f580b38605969311e6060f274169956b6b5f801",
+      "sourceType": "github",
+      "skillPath": "agent-council/SKILL.md",
+      "computedHash": "1381a1bf09d160e9e593fffff2758841d0498c0a7d5b67c7be8af5efc215ed47"
+    }
+  }
+}

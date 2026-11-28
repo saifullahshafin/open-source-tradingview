@@ -1,0 +1,2 @@
+[tool.pytest_asyncio]
+default_fixture_loop_scope = "function"
